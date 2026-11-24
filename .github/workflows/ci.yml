@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  omarchy:
+    name: Omarchy installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck install.sh uninstall.sh scripts/*.sh tests/*.sh omarchy/taskwarrior-hooks/on-exit.omarchy-bar
+      - name: Validate plugin manifest
+        run: jq -e '.id == "danso.tasks" and (.entryPoints | has("barWidget"))' omarchy/danso.tasks/manifest.json
+      - name: Install/uninstall tests (temporary HOME)
+        run: bash tests/install_test.sh
+      - name: Package
+        run: scripts/package-omarchy.sh
+
+  windows-model:
+    name: Windows app (lint + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest ruff
+      - run: ruff check .
+      - run: python -m pytest -q
+
+  windows-build:
+    name: Windows .exe build + selftest
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1
+      - name: Selftest the built exe
+        shell: pwsh
+        run: ./selftest.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taskline-windows
+          path: |
+            windows/dist/taskline.exe
+            windows/dist/selftest.txt
+            windows/dist/screenshots/

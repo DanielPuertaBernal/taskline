@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - shell: pwsh
+        run: ./build.ps1
+      - shell: pwsh
+        run: ./selftest.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: windows/dist/taskline.exe
+
+  omarchy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/install_test.sh
+      - run: scripts/package-omarchy.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omarchy
+          path: dist/taskline-omarchy.tar.gz
+
+  release:
+    needs: [windows, omarchy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Checksums
+        run: cd out && sha256sum taskline.exe taskline-omarchy.tar.gz > SHA256SUMS.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/taskline.exe out/taskline-omarchy.tar.gz out/SHA256SUMS.txt install.sh \
+            --title "Taskline $GITHUB_REF_NAME" --generate-notes --verify-tag
