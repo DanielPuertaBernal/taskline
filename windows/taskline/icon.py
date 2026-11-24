@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PIL import Image, ImageDraw
 
 from . import theme
+
+LOGO = Path(__file__).with_name("assets") / "logo.png"
+
+
+def logo(size: int = 64) -> Image.Image:
+    """The app logo, or the drawn icon if the bundled PNG is missing."""
+    try:
+        return Image.open(LOGO).convert("RGBA").resize((size, size), Image.LANCZOS)
+    except OSError:
+        return render(size=size)
 
 
 def render(done: int = 1, total: int = 3, size: int = 64) -> Image.Image:

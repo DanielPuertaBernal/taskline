@@ -343,9 +343,9 @@ class TasklineApp:
         try:
             from PIL import ImageTk
 
-            from .icon import render
+            from .icon import logo
 
-            photo = ImageTk.PhotoImage(render(size=64))
+            photo = ImageTk.PhotoImage(logo(64))
             self.root.iconphoto(True, photo)
             return photo
         except Exception:  # icon is cosmetic; never fail startup over it

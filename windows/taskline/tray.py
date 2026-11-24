@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pystray
 
 from . import system
-from .icon import render
+from .icon import logo
 
 if TYPE_CHECKING:
     from .app import TasklineApp
@@ -30,7 +30,7 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", lambda: app.post(app.quit)),
         )
-        self.icon = pystray.Icon("taskline", render(size=64), "Taskline", menu)
+        self.icon = pystray.Icon("taskline", logo(64), "Taskline", menu)
 
     def run(self) -> None:
         self.icon.run()
@@ -45,7 +45,6 @@ class Tray:
         if (done, total) == self._state:
             return
         self._state = (done, total)
-        self.icon.icon = render(done, total, size=64)
         self.icon.title = f"Taskline — {done}/{total} done today"
 
     def update_menu(self) -> None:
