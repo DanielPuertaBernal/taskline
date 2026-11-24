@@ -16,7 +16,7 @@ import threading
 import tkinter as tk
 import traceback
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
 from . import __version__, system, theme
@@ -114,7 +114,17 @@ class Panel:
         holder = tk.Frame(main, bg=theme.BG)
         holder.pack(fill="both", expand=True, pady=(12, 0))
         self.canvas = tk.Canvas(holder, bg=theme.BG, highlightthickness=0)
-        self.scroll = tk.Scrollbar(holder, orient="vertical", command=self.canvas.yview)
+        style = ttk.Style(self.win)
+        style.theme_use("clam")
+        style.configure(
+            "Taskline.Vertical.TScrollbar", background=theme.SURFACE, troughcolor=theme.BG,
+            bordercolor=theme.BG, lightcolor=theme.SURFACE, darkcolor=theme.SURFACE,
+            arrowcolor=theme.MUTED, gripcount=0,
+        )
+        style.map("Taskline.Vertical.TScrollbar", background=[("active", theme.HOVER)])
+        self.scroll = ttk.Scrollbar(
+            holder, orient="vertical", command=self.canvas.yview, style="Taskline.Vertical.TScrollbar"
+        )
         self.canvas.configure(yscrollcommand=self.scroll.set)
         self.scroll.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -296,7 +306,7 @@ class TasklineApp:
         self.bar.attributes("-topmost", True)
         self.bar.configure(bg=theme.BG)
         self.bar_label = tk.Label(
-            self.bar, bg=theme.BG, fg=theme.FG, font=(theme.SYMBOL_FONT, 10), padx=12, pady=4, cursor="hand2",
+            self.bar, bg=theme.BG, fg=theme.FG, font=(theme.SYMBOL_FONT, 11), padx=12, pady=4, cursor="hand2",
         )
         self.bar_label.pack()
         Tooltip(self.bar_label, self._tooltip_text)
