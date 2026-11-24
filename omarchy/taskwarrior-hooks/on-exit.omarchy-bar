@@ -1,0 +1,5 @@
+#!/bin/bash
+# Refresh the danso.tasks bar widget and desktop panel after any Taskwarrior command.
+cat >/dev/null
+(omarchy-shell danso.tasks refresh >/dev/null 2>&1; omarchy-shell danso.tasks-panel refresh >/dev/null 2>&1) &
+exit 0

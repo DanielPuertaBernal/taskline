@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "danso.tasks",
+  "name": "Task progress",
+  "version": "1.0.0",
+  "author": "danso",
+  "description": "Taskwarrior progress bar: tasks completed today against everything still open",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "TasksPanel.qml",
+    "barWidget": "Tasks.qml"
+  },
+  "barWidget": {
+    "displayName": "Task progress",
+    "description": "Daily Taskwarrior progress",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
