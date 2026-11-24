@@ -3,7 +3,7 @@
   "id": "danso.tasks",
   "name": "Task progress",
   "version": "1.0.0",
-  "author": "danso",
+  "author": "Daniel Puerta",
   "description": "Taskwarrior progress bar: tasks completed today against everything still open",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
