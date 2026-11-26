@@ -7,7 +7,8 @@ python tools/make_icon.py taskline.ico ../assets/logo.png
 python tools/make_version_file.py version_info.txt
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name taskline `
   --icon taskline.ico --version-file version_info.txt --hidden-import pystray._win32 --collect-submodules taskline `
-  --add-data "taskline/assets/logo.png;taskline/assets" run_taskline.py
+  --add-data "taskline/assets/logo.png;taskline/assets" `
+  --add-data "taskline/assets/icons;taskline/assets/icons" run_taskline.py
 if (-not (Test-Path dist/taskline.exe)) { throw "taskline.exe was not produced" }
 Get-Item dist/taskline.exe | Select-Object Name, Length
 $info = (Get-Item dist/taskline.exe).VersionInfo
