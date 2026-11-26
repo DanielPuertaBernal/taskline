@@ -33,11 +33,11 @@
 | 🔄 **Updates itself** | On launch (once a day) Taskline checks for a new release, verifies its SHA256 checksum and installs it. You can turn it off. |
 | 🌙 **Tokyo Night look** | Matches the default Omarchy theme on Linux, and brings the same style to Windows. |
 | 🐧 **Built on Taskwarrior** | On Omarchy it reads and writes your real [Taskwarrior 3](https://taskwarrior.org) data, and refreshes instantly through a Taskwarrior hook. |
-| 🪟 **Native-feeling on Windows** | A borderless, always-on-top bar, a tray icon and an optional *Start with Windows* switch, in a single `.exe`. |
+| 🪟 **Native-feeling on Windows** | A borderless, always-on-top bar, the same panel as on Omarchy, a tray icon and an optional *Start with Windows* switch — one small `.exe` written in Rust with [iced](https://iced.rs). |
 | 🔁 **Portable data** | The Windows app stores tasks in the `task export` JSON format and can import/export Taskwarrior files. |
 | 🔒 **Local only** | No accounts, no cloud, no telemetry. Your tasks never leave your machine. |
 
-> **Already on v1.0?** Install v1.1.0 once by hand — see [Upgrading from v1.0](#-upgrading-from-v10). After that, updates install themselves.
+> **Already on v1.1 or v1.2?** v2.0 installs itself on the next launch and keeps your tasks and settings. **On v1.0?** Install the latest release once by hand — see [Upgrading from v1.0](#from-v10).
 
 ## 🐧 Install on Omarchy
 
@@ -94,21 +94,24 @@ It is idempotent — run it again any time to update — and it never touches yo
 2. Run it. The bar appears at the top of your screen and an icon appears in the tray.
 3. Right-click the bar or the tray icon → **Start with Windows** to launch it at login.
 
+Since v2.0 the Windows app is written in Rust with [iced](https://iced.rs) and its panel is the same as the Omarchy one: today's progress as a donut, **Hechas / Pendientes** (Done / Pending), the sort button, the **Tema** switch and the task list, in Tokyo Night or Tokyo Night Day. The panel is in Spanish when Windows is in Spanish and in English otherwise; calendar names also follow Portuguese, French and German.
+
 | Action | How |
 |---|---|
 | Open the task panel | Click the bar, or click the tray icon |
 | Move the bar | Drag it (the position is remembered) |
-| Menu | Right-click the bar: Start with Windows, import/export Taskwarrior JSON, reset position, quit |
+| Menu | Right-click the bar or the tray icon: Start with Windows, import/export Taskwarrior JSON, reset position, theme, updates, about, quit |
 | Add a task | Type in the panel and press Enter (`project:Name` groups it) |
-| Due date | Click the **due** field: a calendar opens (arrows, PageUp/PageDown, Enter, Esc; chips Today / Tomorrow / +1 week / No date; names follow your Windows language). Typing `today`, `+3d`, `+2w` or `2026-12-01` still works, and `due:+3d` in the text |
+| Due date | Click the **due** / **fecha** field: a calendar opens (arrows, PageUp/PageDown, Enter, Esc; chips Today / Tomorrow / +1 week / No date). Typing `today`, `+3d`, `+2w` or `2026-12-01` still works, and `due:+3d` in the text. Days with pending tasks show a dot |
 | Priority | The button next to the due field opens High / Medium / Low / No priority with their icons; or type `priority:H` |
-| Edit | ✎ shows the text with `due:` / `priority:`, plus calendar and priority buttons for that task |
+| Edit | The pencil (or double-click) shows the text with `due:` / `priority:`, plus calendar and priority buttons for that task; Enter saves, Esc cancels |
+| Complete / delete | The round checkbox / the trash icon on each row |
 | Sort | **Sort: due date** / **Sort: priority** in the panel (remembered) |
-| Theme | The **Theme** switch in the panel (light ↔ dark) and **Auto** to follow Windows; also right-click → **Theme** or the tray menu. Saved in `%APPDATA%\taskline\settings.json` |
-| Complete / edit / delete | ☐ / ✎ (or double-click) / ✕ on each row |
-| Updates | Right-click → **Update automatically** (on by default) or **Check for updates now**; **About Taskline** shows the version |
+| Theme | The **Theme** switch (light ↔ dark) and **Auto** to follow Windows; also in the menu. Saved in `%APPDATA%\taskline\settings.json` |
+| Updates | Menu → **Update automatically** (on by default) or **Check for updates now**; **About Taskline** shows the version |
+| Close the panel | Esc, the ✕ in the corner, or click the bar again |
 
-Tasks live in `%APPDATA%\taskline\tasks.json`. Windows SmartScreen may warn about an unsigned download; choose **More info → Run anyway**. Coming from v1.0? See [Upgrading from v1.0](#-upgrading-from-v10).
+Tasks live in `%APPDATA%\taskline\tasks.json`. Windows SmartScreen may warn about an unsigned download; choose **More info → Run anyway**. Coming from v1.0? See [Upgrading from v1.0](#from-v10).
 
 ## 🔄 Automatic updates
 
@@ -122,9 +125,13 @@ Tasks live in `%APPDATA%\taskline\tasks.json`. Windows SmartScreen may warn abou
 | Turn it off | Right-click the bar → uncheck **Update automatically** | `echo auto_update=false > ~/.config/taskline/omarchy.conf` |
 | Update by hand | Right-click → **Check for updates now** | `~/.config/omarchy/plugins/danso.tasks/taskline-update` |
 
-## ⬆️ Upgrading from v1.0
+## ⬆️ Upgrading
 
-v1.0 has no updater, so install v1.1 once by hand. From then on updates arrive by themselves.
+**From v1.1 or v1.2 (Windows):** nothing to do. On its next launch the old version finds v2.0, checks `taskline.exe` against `SHA256SUMS.txt`, swaps it in (keeping `taskline.exe.bak`) and starts the new one, which shows **Updated to v2.0.0**. The new app reads the same `tasks.json`, `tasks.meta.json` and `settings.json` (theme, sort, bar position, update choice) and keeps the same *Start with Windows* entry. CI checks this path on every build by letting the published v1.2.0 update itself to the new exe.
+
+### From v1.0
+
+v1.0 has no updater, so install the latest release once by hand. From then on updates arrive by themselves.
 
 **Windows**
 
@@ -153,6 +160,7 @@ Updates replace the program, never your tasks.
 - Before a new version changes the file's schema, it copies the original to `tasks.json.bak-<old version>-<date>` (the last five are kept).
 - Every save writes a temporary file, flushes it to disk and then renames it over the old one, so a crash or power cut mid-write leaves the previous file intact.
 - If the file cannot be read or migrated, Taskline leaves it untouched and opens **read-only** with a message explaining why — it never overwrites a file it did not understand.
+- v2.0 (Rust) reads and writes exactly the same files as v1.x and keeps every field it does not use, so a task file written by v2.0 still opens in v1.2.
 - Rolling back: the updater keeps the previous exe as `taskline.exe.bak` next to the new one. v1.0 reads a v1.1 `tasks.json` fine (it keeps the new `due` and `priority` fields).
 
 **Omarchy**
@@ -168,13 +176,13 @@ Updates replace the program, never your tasks.
 
 | Windows — dark | Windows — light |
 |---|---|
-| <img src="assets/screenshots/windows-panel-dark.png" alt="Windows task panel in Tokyo Night with the calendar" width="480"> | <img src="assets/screenshots/windows-panel-light.png" alt="Windows task panel in Tokyo Night Day with the calendar" width="480"> |
+| <img src="assets/screenshots/windows-panel-dark.png" alt="Windows task panel (Rust/iced) in Tokyo Night with the month calendar open" width="480"> | <img src="assets/screenshots/windows-panel-light.png" alt="Windows task panel (Rust/iced) in Tokyo Night Day with the month calendar open" width="480"> |
 
 | Omarchy — bar widget | Windows — bar |
 |---|---|
 | <img src="assets/screenshots/omarchy-bar.png" alt="Omarchy bar widget" width="380"> | <img src="assets/screenshots/windows-bar.png" alt="Windows bar" width="300"> |
 
-<sub>Omarchy screenshots are from a real desktop running the panel against demo tasks in a temporary Taskwarrior data folder (dots in the calendar mark days with tasks). Windows screenshots are captured automatically by CI on `windows-latest` from the built `taskline.exe`, using demo tasks with due dates and priority icons.</sub>
+<sub>Omarchy screenshots are from a real desktop running the panel against demo tasks in a temporary Taskwarrior data folder (dots in the calendar mark days with tasks). Windows screenshots are captured by CI on `windows-latest` from the built `taskline.exe` (`--selftest`), which renders its own windows with demo tasks in a temporary folder.</sub>
 
 ## 🛠️ Build from source
 
@@ -187,15 +195,27 @@ node tests/logic_test.js          # panel logic: due dates, priority, sorting
 scripts/package-omarchy.sh        # -> dist/taskline-omarchy.tar.gz
 ```
 
-**Windows app** (Python 3.10+, Tkinter, pystray, Pillow, PyInstaller):
+**Windows app** (Rust, [iced](https://iced.rs)), in `windows/`:
+
+| Crate | What it is |
+|---|---|
+| `taskline-core` | Task model, quick input, due dates, priorities, sorting, calendar, texts, palettes, settings, JSON storage (schema sidecar, migrations with backups, atomic writes), Taskwarrior import/export and the updater (semver, SHA256). No GUI; tested on any OS. |
+| `taskline-app` | The iced GUI (bar, panel, popovers, tray, Start with Windows) that builds `taskline.exe`. |
+
+```bash
+cd windows
+cargo test -p taskline-core        # core tests, on Linux or Windows
+cargo run -p taskline              # the app (also runs on Linux for development, without tray)
+```
 
 ```powershell
 cd windows
-./build.ps1                       # -> windows/dist/taskline.exe
-./selftest.ps1                    # drives the real UI and checks the result
+cargo build --release              # -> windows/target/release/taskline.exe
+./selftest.ps1                     # drives the real windows with demo data, saves screenshots to dist/
+./tests/upgrade.ps1                # published v1.2.0 updates itself to this build, then v2 self-updates
 ```
 
-Run it without building, on any OS with Tk: `cd windows && pip install pystray pillow && python -m taskline`. Tests: `cd windows && pip install pytest && python -m pytest`.
+`TASKLINE_PREVIEW_DIR=/tmp/p cargo test -p taskline preview` renders the panel headlessly into PNGs, handy on Linux.
 
 Releases are automatic: pushing a `v*` tag (it must match the version in the code) builds `taskline.exe` on Windows and the Omarchy tarball on Linux, and attaches both plus `SHA256SUMS.txt` to a GitHub Release — the file the updaters verify against.
 
@@ -248,7 +268,7 @@ Ideas and bug reports are welcome in [Issues](https://github.com/DanielPuertaBer
 
 ## 🙏 Credits
 
-Priority icons are from [Lucide](https://lucide.dev) (ISC license, see [`assets/icons/LICENSE-lucide.txt`](assets/icons/LICENSE-lucide.txt)). Colors are the [Tokyo Night](https://github.com/folke/tokyonight.nvim) palettes.
+The Windows interface is based on [**kazari**](https://github.com/Santiago-0t/kazari) by Santiago Otalvaro (MIT License) — its iced app structure and styling approach, recolored with Tokyo Night. Icons are from [Lucide](https://lucide.dev) (ISC license, see [`assets/icons/LICENSE-lucide.txt`](assets/icons/LICENSE-lucide.txt)); the Windows app embeds [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (SIL Open Font License 1.1). Colors are the [Tokyo Night](https://github.com/folke/tokyonight.nvim) palettes. Full notices are in [`NOTICE`](NOTICE).
 
 ---
 

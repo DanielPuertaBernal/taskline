@@ -2,6 +2,26 @@
 
 All notable changes to Taskline. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-11-26
+
+### Changed
+- The Windows app is rewritten in Rust with [iced](https://iced.rs), based on the interface of [kazari](https://github.com/Santiago-0t/kazari) (MIT) and kept in Tokyo Night / Tokyo Night Day. Its panel now matches the Omarchy v1.2 panel: antialiased donut, Hechas / Pendientes (Done / Pending) legend, sort button, Tema switch with Claro / Oscuro / Auto at the bottom left, round checkboxes, due badges, Lucide priority icons and menu, calendar popover with chips, themed tooltips, and edit / delete icons. JetBrains Mono and the icons are embedded in the exe.
+- The panel speaks Spanish when Windows is in Spanish and English otherwise (calendar names also in Portuguese, French and German).
+- The bar draws its segments as rounded pills and stays on top; right-clicking it shows the same native menu as the tray icon.
+- `taskline.exe` is a single native binary instead of a PyInstaller bundle: about 5.3 MB instead of 20 MB, and it starts faster.
+- CI builds the exe on `windows-latest`, runs its selftest (real windows, both themes captured, updater against a local fake release, the Run key) and lets the published v1.2.0 update itself to the new exe.
+
+### Kept compatible
+- Same data files in `%APPDATA%\taskline`: `tasks.json` (a `task export` array), `tasks.meta.json` (schema version) and `settings.json` (theme, sort, bar position, auto-update). Unknown fields and their order are preserved; migrations still back up first and saves are still atomic. Tested against files written by v1.0, v1.1 and v1.2.
+- Same release assets (`taskline.exe`, `taskline-omarchy.tar.gz`, `install.sh`, `SHA256SUMS.txt`), so v1.1 and v1.2 update to v2.0 by themselves; v2.0 keeps the same updater (once a day on launch, SHA256 verified, `taskline.exe.bak`, relaunch, opt-out).
+- The *Start with Windows* entry keeps the `Taskline` value name in `HKCU\…\Run`.
+
+### Removed
+- The Python (Tkinter, pystray, PyInstaller) Windows app; it remains in git history.
+
+### Notes
+- The Omarchy plugin is unchanged apart from its version number.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added
@@ -46,6 +66,7 @@ All notable changes to Taskline. The format follows [Keep a Changelog](https://k
 - Windows app: always-on-top bar, task panel, tray icon, Start with Windows, Taskwarrior JSON import/export.
 - CI and a release workflow that publishes `taskline.exe`, `taskline-omarchy.tar.gz`, `install.sh` and `SHA256SUMS.txt`.
 
+[2.0.0]: https://github.com/DanielPuertaBernal/taskline/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/DanielPuertaBernal/taskline/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/DanielPuertaBernal/taskline/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/DanielPuertaBernal/taskline/releases/tag/v1.0.0

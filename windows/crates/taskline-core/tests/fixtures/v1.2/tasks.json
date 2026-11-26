@@ -1,0 +1,63 @@
+[
+ {
+  "uuid": "0b6e1e8e-1d1f-4c8a-9a51-1f0c6d1e0a01",
+  "description": "Review pull requests",
+  "status": "pending",
+  "entry": "20261120T100000Z",
+  "modified": "20261120T100000Z",
+  "project": "Work"
+ },
+ {
+  "uuid": "0b6e1e8e-1d1f-4c8a-9a51-1f0c6d1e0a02",
+  "description": "Café con Ana ☕",
+  "status": "completed",
+  "entry": "20261120T100000Z",
+  "end": "20261124T120000Z",
+  "modified": "20261124T120000Z"
+ },
+ {
+  "uuid": "0b6e1e8e-1d1f-4c8a-9a51-1f0c6d1e0a03",
+  "description": "Old chore",
+  "status": "deleted",
+  "entry": "20261120T100000Z",
+  "end": "20261121T120000Z",
+  "modified": "20261121T120000Z",
+  "tags": [
+   "home"
+  ]
+ },
+ {
+  "uuid": "0b6e1e8e-1d1f-4c8a-9a51-1f0c6d1e0a04",
+  "description": "Pay rent",
+  "status": "pending",
+  "entry": "20261125T130000Z",
+  "modified": "20261125T130000Z",
+  "due": "20261201T050000Z",
+  "priority": "H"
+ },
+ {
+  "uuid": "0b6e1e8e-1d1f-4c8a-9a51-1f0c6d1e0a05",
+  "description": "Imported from Taskwarrior",
+  "status": "pending",
+  "entry": "20261125T130000Z",
+  "modified": "20261125T130000Z",
+  "priority": "L",
+  "annotations": [
+   {
+    "entry": "20261125T130000Z",
+    "description": "note"
+   }
+  ],
+  "urgency_custom": 1.5
+ },
+ {
+  "uuid": "0b6e1e8e-1d1f-4c8a-9a51-1f0c6d1e0a06",
+  "description": "Write the weekly report",
+  "status": "pending",
+  "entry": "20261126T130000Z",
+  "modified": "20261126T130000Z",
+  "due": "20261126T050000Z",
+  "priority": "M",
+  "project": "Work"
+ }
+]
