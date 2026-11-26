@@ -2,29 +2,36 @@
 
 The bar mirrors the Omarchy widget ("▰▰▰▱▱▱▱▱▱▱  1/4"): left click opens the
 panel, drag moves it, right click shows the menu. The panel adds, completes,
-edits and deletes tasks and shows today's progress as a donut.
+edits and deletes tasks with a due date and a priority, sorts them by due date
+or priority, and shows today's progress as a donut. On start (at most once a
+day) it looks for a newer release and installs it; see updater.py.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import sys
 import tempfile
 import threading
 import tkinter as tk
 import traceback
+from datetime import date
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
-from . import __version__, system, theme
-from .model import Task, TaskStore, progress_bar
+from . import __version__, system, theme, updater
+from .model import PRIORITIES, SORT_DUE, SORT_PRIORITY, SORTS, ReadOnlyError, Task, TaskStore, progress_bar
 
 REFRESH_MS = 60_000
 POLL_MS = 150
 DRAG_THRESHOLD = 4
+UPDATE_DELAY_MS = 4_000
+NOTICE_MS = 6_000
+SORT_LABELS = {SORT_DUE: "Sort: due date", SORT_PRIORITY: "Sort: priority"}
 
 
 class Tooltip:
@@ -63,6 +70,7 @@ class Panel:
     def __init__(self, app: TasklineApp) -> None:
         self.app = app
         self.editing: str | None = None
+        self.new_priority: str | None = None
         self.win = tk.Toplevel(app.root)
         self.win.title("Taskline")
         self.win.configure(bg=theme.BG)
@@ -91,28 +99,61 @@ class Panel:
         self.done_label.pack(fill="x")
         self.pending_label = tk.Label(summary, bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 12), anchor="w")
         self.pending_label.pack(fill="x", pady=(4, 0))
+        self.sort_button = tk.Label(
+            summary, bg=theme.SURFACE, fg=theme.FG, font=(theme.FONT, 10), padx=10, pady=4, cursor="hand2",
+        )
+        self.sort_button.pack(anchor="w", pady=(14, 0))
+        self.sort_button.bind("<Button-1>", lambda _e: self.app.toggle_sort())
         tk.Label(
-            summary, text="Enter adds · Esc closes\nproject:Name groups a task",
+            summary,
+            text="Enter adds · Esc closes\nDue: today, tomorrow, +3d\nor 2026-12-01\n"
+                 "Inline: due:+3d priority:H\nproject:Name",
             bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 9), justify="left", anchor="w",
         ).pack(fill="x", side="bottom")
 
         # ---- list column
         main = tk.Frame(self.win, bg=theme.BG)
         main.pack(side="left", fill="both", expand=True, padx=(12, 24), pady=24)
-        self.entry = tk.Entry(
-            main, bg=theme.SURFACE, fg=theme.FG, insertbackground=theme.FG, relief="flat",
+        self.banner = tk.Label(
+            main, bg=theme.RED, fg=theme.BG, font=(theme.FONT, 10, "bold"), justify="left", anchor="w",
+            padx=10, pady=6, wraplength=440,
+        )
+        add_row = tk.Frame(main, bg=theme.BG)
+        add_row.pack(fill="x")
+        self.add_row = add_row
+        self.priority_button = tk.Label(
+            add_row, bg=theme.SURFACE, font=(theme.FONT, 11, "bold"), width=3, pady=8, cursor="hand2",
+        )
+        self.priority_button.pack(side="right", padx=(6, 0))
+        self.priority_button.bind("<Button-1>", lambda _e: self._cycle_priority())
+        self.due_entry = tk.Entry(
+            add_row, bg=theme.SURFACE, fg=theme.FG, insertbackground=theme.FG, relief="flat", width=11,
             font=(theme.FONT, 12), highlightthickness=1, highlightbackground=theme.SURFACE,
             highlightcolor=theme.ACCENT,
         )
-        self.entry.pack(fill="x", ipady=8)
+        self.due_entry.pack(side="right", padx=(6, 0), ipady=8)
+        self.due_entry.bind("<Return>", self._add)
+        self.entry = tk.Entry(
+            add_row, bg=theme.SURFACE, fg=theme.FG, insertbackground=theme.FG, relief="flat",
+            font=(theme.FONT, 12), highlightthickness=1, highlightbackground=theme.SURFACE,
+            highlightcolor=theme.ACCENT,
+        )
+        self.entry.pack(side="left", fill="x", expand=True, ipady=8)
         self.entry.bind("<Return>", self._add)
         self.placeholder = "New task and Enter…"
+        self.due_placeholder = "due"
         self._show_placeholder()
-        self.entry.bind("<FocusIn>", self._clear_placeholder)
+        self._show_placeholder(self.due_entry, self.due_placeholder)
+        self.entry.bind("<FocusIn>", lambda _e: self._clear_placeholder())
         self.entry.bind("<FocusOut>", lambda _e: self._show_placeholder())
+        self.due_entry.bind("<FocusIn>", lambda _e: self._clear_placeholder(self.due_entry, self.due_placeholder))
+        self.due_entry.bind("<FocusOut>", lambda _e: self._show_placeholder(self.due_entry, self.due_placeholder))
+        self.error = tk.Label(main, bg=theme.BG, fg=theme.RED, font=(theme.FONT, 9), anchor="w")
+        self.error.pack(fill="x")
+        self._paint_priority()
 
         holder = tk.Frame(main, bg=theme.BG)
-        holder.pack(fill="both", expand=True, pady=(12, 0))
+        holder.pack(fill="both", expand=True, pady=(4, 0))
         self.canvas = tk.Canvas(holder, bg=theme.BG, highlightthickness=0)
         style = ttk.Style(self.win)
         style.theme_use("clam")
@@ -163,25 +204,55 @@ class Panel:
             self.hide()
 
     # --------------------------------------------------------------- input --
-    def _show_placeholder(self) -> None:
-        if not self.entry.get():
-            self.entry.insert(0, self.placeholder)
-            self.entry.configure(fg=theme.MUTED)
+    def _show_placeholder(self, entry: tk.Entry | None = None, text: str | None = None) -> None:
+        entry = entry or self.entry
+        if not entry.get():
+            entry.insert(0, text or self.placeholder)
+            entry.configure(fg=theme.MUTED)
 
-    def _clear_placeholder(self, _event=None) -> None:
-        if self.entry.get() == self.placeholder and self.entry.cget("fg") == theme.MUTED:
-            self.entry.delete(0, "end")
-            self.entry.configure(fg=theme.FG)
+    def _clear_placeholder(self, entry: tk.Entry | None = None, text: str | None = None) -> None:
+        entry = entry or self.entry
+        if entry.get() == (text or self.placeholder) and entry.cget("fg") == theme.MUTED:
+            entry.delete(0, "end")
+            entry.configure(fg=theme.FG)
+
+    @staticmethod
+    def _value(entry: tk.Entry, placeholder: str) -> str:
+        text = entry.get().strip()
+        return "" if text == placeholder and entry.cget("fg") == theme.MUTED else text
+
+    def _cycle_priority(self) -> None:
+        order = [None, *PRIORITIES]
+        self.new_priority = order[(order.index(self.new_priority) + 1) % len(order)]
+        self._paint_priority()
+
+    def _paint_priority(self) -> None:
+        p = self.new_priority
+        self.priority_button.configure(
+            text=p or "–", fg=theme.PRIORITY_COLORS.get(p, theme.MUTED),
+        )
+
+    def show_error(self, message: str) -> None:
+        self.error.configure(text=message)
+        if message:
+            self.win.after(5000, lambda: self.error.configure(text=""))
 
     def _add(self, _event=None) -> None:
-        text = self.entry.get().strip()
-        if not text or (text == self.placeholder and self.entry.cget("fg") == theme.MUTED):
+        text = self._value(self.entry, self.placeholder)
+        if not text:
             return
         try:
-            self.app.store.add(text)
-        except ValueError:
+            self.app.store.add(text, due=self._value(self.due_entry, self.due_placeholder) or None,
+                               priority=self.new_priority)
+        except (ValueError, ReadOnlyError) as exc:
+            self.show_error(str(exc))
             return
+        self.show_error("")
         self.entry.delete(0, "end")
+        self.due_entry.delete(0, "end")
+        self.new_priority = None
+        self._paint_priority()
+        self.entry.focus_set()
         self.app.refresh()
 
     # -------------------------------------------------------------- render --
@@ -190,9 +261,17 @@ class Panel:
         self._draw_pie(done, total)
         self.done_label.configure(text=f"● Done: {done}")
         self.pending_label.configure(text=f"● Pending: {total - done}")
+        self.sort_button.configure(text="⇅ " + SORT_LABELS[self.app.sort])
+        store = self.app.store
+        if store.read_only:
+            self.banner.configure(text="Read-only: " + (store.load_error or "")
+                                  + "\nFix or restore the file, then restart Taskline.")
+            self.banner.pack(fill="x", pady=(0, 8), before=self.add_row)
+        else:
+            self.banner.pack_forget()
         for child in self.rows.winfo_children():
             child.destroy()
-        tasks = self.app.store.today()
+        tasks = store.today(self.app.sort)
         if not tasks:
             tk.Label(
                 self.rows, text="No tasks yet. Add the first one above.", bg=theme.BG,
@@ -231,20 +310,31 @@ class Panel:
             row, "☑" if task.is_done else "☐", theme.ACCENT if task.is_done else theme.FG,
             lambda: self._toggle(task.uuid),
         )
-        check.pack(side="left", padx=(8, 10))
+        check.pack(side="left", padx=(8, 6))
+        marker = tk.Label(
+            row, text="●" if task.priority else " ", bg=theme.BG,
+            fg=theme.PRIORITY_COLORS.get(task.priority, theme.MUTED), font=(theme.SYMBOL_FONT, 9), width=2,
+        )
+        marker.pack(side="left", padx=(0, 4))
 
         delete = self._icon_button(row, "✕", theme.RED, lambda: self._delete(task.uuid))
         delete.pack(side="right", padx=(8, 8))
         edit = self._icon_button(row, "✎", theme.FG, lambda: self._start_edit(task.uuid))
         edit.pack(side="right", padx=4)
+        due_text = self.app.store.due_label(task)
+        if due_text and self.editing != task.uuid:
+            state = self.app.store.due_state(task)
+            tk.Label(
+                row, text=due_text, bg=theme.BG, font=(theme.FONT, 10),
+                fg=theme.DUE_COLORS.get(state, theme.MUTED),
+            ).pack(side="right", padx=(8, 6))
 
         if self.editing == task.uuid:
             field = tk.Entry(
                 row, bg=theme.SURFACE, fg=theme.FG, insertbackground=theme.FG, relief="flat",
                 font=self.font,
             )
-            text = task.description + (f" project:{task.project}" if task.project else "")
-            field.insert(0, text)
+            field.insert(0, self.app.store.edit_text(task))
             field.pack(side="left", fill="x", expand=True, ipady=4)
             field.bind("<Return>", lambda _e: self._save_edit(task.uuid, field.get()))
             field.after(10, lambda: (field.focus_set(), field.select_range(0, "end")))
@@ -263,12 +353,20 @@ class Panel:
         return label
 
     # ------------------------------------------------------------- actions --
+    def _guarded(self, action) -> bool:
+        try:
+            action()
+        except (ValueError, ReadOnlyError) as exc:
+            self.show_error(str(exc))
+            return False
+        return True
+
     def _toggle(self, task_uuid: str) -> None:
-        self.app.store.toggle(task_uuid)
+        self._guarded(lambda: self.app.store.toggle(task_uuid))
         self.app.refresh()
 
     def _delete(self, task_uuid: str) -> None:
-        self.app.store.delete(task_uuid)
+        self._guarded(lambda: self.app.store.delete(task_uuid))
         if self.editing == task_uuid:
             self.editing = None
         self.app.refresh()
@@ -278,12 +376,9 @@ class Panel:
         self.refresh()
 
     def _save_edit(self, task_uuid: str, text: str) -> None:
+        if text.strip() and not self._guarded(lambda: self.app.store.edit(task_uuid, text)):
+            return  # keep the field open so the typo can be fixed
         self.editing = None
-        try:
-            if text.strip():
-                self.app.store.edit(task_uuid, text)
-        except ValueError:
-            pass
         self.app.refresh()
 
 
@@ -292,6 +387,9 @@ class TasklineApp:
         self.store = store
         self.settings = system.load_settings()
         self.segments = int(self.settings.get("segments", 10))
+        sort = self.settings.get("sort")
+        self.sort = sort if sort in SORTS else SORT_DUE
+        self.notice_until = 0
         self.events: queue.Queue = queue.Queue()
         self.tray = None
 
@@ -318,6 +416,7 @@ class TasklineApp:
         self._dragged = False
 
         self.autostart_var = tk.BooleanVar(value=system.autostart_enabled())
+        self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", True) is not False)
         self.menu = tk.Menu(self.root, tearoff=False, bg=theme.SURFACE, fg=theme.FG,
                             activebackground=theme.ACCENT, activeforeground=theme.BG)
         self.menu.add_command(label="Open tasks", command=self.toggle_panel)
@@ -328,6 +427,11 @@ class TasklineApp:
         self.menu.add_command(label="Export Taskwarrior JSON…", command=self.export_json)
         self.menu.add_command(label="Reset bar position", command=self.reset_position)
         self.menu.add_separator()
+        self.menu.add_checkbutton(label="Update automatically", variable=self.auto_update_var,
+                                  command=self._auto_update_changed)
+        self.menu.add_command(label="Check for updates now", command=lambda: self.check_for_updates(manual=True))
+        self.menu.add_command(label="About Taskline", command=self.about)
+        self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit)
 
         self.panel = Panel(self)
@@ -335,6 +439,10 @@ class TasklineApp:
         self._place_bar()
         if with_tray:
             self._start_tray()
+            self._show_update_notice()
+            self.root.after(UPDATE_DELAY_MS, self.check_for_updates)
+        if store.read_only:
+            self.root.after(500, self._warn_read_only)
         self.root.after(POLL_MS, self._poll)
         self.root.after(REFRESH_MS, self._tick)
 
@@ -352,10 +460,21 @@ class TasklineApp:
             return None
 
     def _tooltip_text(self) -> str:
-        pending = [t for t in self.store.today() if not t.is_done][:5]
+        pending = [t for t in self.store.today(self.sort) if not t.is_done][:5]
         if not pending:
             return "All done for today"
-        return "Pending:\n" + "\n".join(f"• {t.description}" for t in pending)
+        lines = []
+        for t in pending:
+            due = self.store.due_label(t)
+            lines.append(f"• {t.description}" + (f"  ({due})" if due else ""))
+        return "Pending:\n" + "\n".join(lines)
+
+    def _warn_read_only(self) -> None:
+        messagebox.showwarning(
+            "Taskline",
+            f"{self.store.load_error}\n\nTaskline opened read-only so nothing is overwritten. "
+            "Restore the file (backups are next to it as tasks.json.bak-*) and restart Taskline.",
+        )
 
     def _place_bar(self) -> None:
         self.bar.update_idletasks()
@@ -403,6 +522,88 @@ class TasklineApp:
     def toggle_panel(self) -> None:
         self.panel.toggle()
 
+    def toggle_sort(self) -> None:
+        self.sort = SORT_PRIORITY if self.sort == SORT_DUE else SORT_DUE
+        self.settings["sort"] = self.sort
+        system.save_settings(self.settings)
+        self.refresh()
+
+    def about(self) -> None:
+        messagebox.showinfo(
+            "About Taskline",
+            f"Taskline {__version__}\n\nYour day, as one line.\n"
+            f"https://github.com/{updater.REPO}\n\nTasks: {self.store.path}",
+        )
+
+    # ------------------------------------------------------------- updates --
+    def _auto_update_changed(self) -> None:
+        self.settings["auto_update"] = bool(self.auto_update_var.get())
+        system.save_settings(self.settings)
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        """Look for a newer release on a worker thread (once a day unless `manual`)."""
+        if not manual and not updater.check_due(self.settings, date.today()):
+            return
+        if not getattr(sys, "frozen", False) and not os.environ.get("TASKLINE_UPDATE_API"):
+            if manual:
+                messagebox.showinfo("Taskline", "Updates are installed by the packaged taskline.exe only.")
+            return
+        self.settings["last_update_check"] = date.today().isoformat()
+        system.save_settings(self.settings)
+        target = Path(sys.executable)
+
+        def work() -> None:
+            try:
+                release = updater.find_update(__version__)
+                if release is None:
+                    if manual:
+                        self.post(lambda: messagebox.showinfo("Taskline", f"Taskline {__version__} is up to date."))
+                    return
+                new = updater.download_verified(release, target.parent)
+            except updater.UpdateError as exc:
+                if manual:
+                    message = f"Update not installed:\n{exc}"
+                    self.post(lambda: messagebox.showerror("Taskline", message))
+                return
+            except Exception:  # an update must never crash the app
+                return
+            self.post(lambda: self._install_update(release, target, new))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _install_update(self, release: updater.Release, target: Path, new: Path) -> None:
+        try:
+            script = updater.write_script(target, new, updater.running_pids())
+        except OSError:
+            new.unlink(missing_ok=True)
+            return
+        self.settings["update_notice"] = release.version
+        system.save_settings(self.settings)
+        updater.launch_script(script)
+        self.quit()
+
+    def _show_update_notice(self) -> None:
+        version = self.settings.pop("update_notice", None)
+        if version is None:
+            return
+        system.save_settings(self.settings)
+        if version != __version__:
+            return  # the update was rolled back
+        message = f"Updated to v{__version__}"
+        self.notice_until = 1
+        self.bar_label.configure(text=f"✓ {message}", fg=theme.GREEN)
+        if self.tray:
+            try:
+                self.tray.icon.notify(message, "Taskline")
+            except Exception:
+                pass
+
+        def clear() -> None:
+            self.notice_until = 0
+            self.refresh()
+
+        self.root.after(NOTICE_MS, clear)
+
     def _autostart_changed(self) -> None:
         self.set_autostart(self.autostart_var.get())
 
@@ -439,14 +640,16 @@ class TasklineApp:
 
     def refresh(self) -> None:
         done, total = self.store.progress()
+        if self.tray:
+            self.tray.update(done, total)
+        if self.panel.visible:
+            self.panel.refresh()
+        if self.notice_until:
+            return
         self.bar_label.configure(
             text=progress_bar(done, total, self.segments),
             fg=theme.ACCENT if total > 0 and done == total else theme.FG,
         )
-        if self.panel.visible:
-            self.panel.refresh()
-        if self.tray:
-            self.tray.update(done, total)
 
     def _tick(self) -> None:
         # Covers the day rollover and edits made by another process.
@@ -495,13 +698,60 @@ class TasklineApp:
 
 # ------------------------------------------------------------------ entry --
 def _demo_store(directory: Path) -> TaskStore:
-    store = TaskStore(directory / "tasks.json")
-    first = store.add("Review pull requests project:Work")
-    store.add("Write the weekly report project:Work")
-    store.add("Buy groceries project:Home")
-    store.add("30 minutes of reading")
+    store = TaskStore(directory / "tasks.json", app_version=__version__)
+    first = store.add("Review pull requests project:Work", priority="H")
+    store.add("Send the invoice project:Work", due="2020-01-01", priority="H")  # overdue
+    store.add("Write the weekly report project:Work", due="today", priority="M")
+    store.add("Buy groceries project:Home", due="tomorrow", priority="L")
+    store.add("30 minutes of reading", due="+5d")
     store.complete(first.uuid)
     return store
+
+
+def _selftest_updater(directory: Path) -> list[str]:
+    """Serve a fake release over local HTTP and run the bundled updater against it."""
+    import hashlib
+    import http.server
+
+    payload = b"MZ selftest build"
+    files = {
+        "/api": json.dumps({"tag_name": "v99.0.0", "assets": [
+            {"name": n, "browser_download_url": f"URL/{n}"} for n in ("taskline.exe", "SHA256SUMS.txt")
+        ]}).encode(),
+        "/taskline.exe": payload,
+        "/SHA256SUMS.txt": f"{hashlib.sha256(payload).hexdigest()}  taskline.exe\n".encode(),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = files.get(self.path)
+            self.send_response(200 if body else 404)
+            self.end_headers()
+            self.wfile.write(body or b"")
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    base = f"http://127.0.0.1:{server.server_port}"
+    files["/api"] = files["/api"].replace(b"URL", base.encode())
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        release = updater.latest_release(updater.http_get, base + "/api")
+        assert release and updater.is_newer(release.version, __version__), release
+        new = updater.download_verified(release, directory)
+        assert new.read_bytes() == payload
+        files["/taskline.exe"] = b"tampered"
+        try:
+            updater.download_verified(release, directory)
+            raise AssertionError("a tampered download was accepted")
+        except updater.UpdateError:
+            pass
+        script = updater.write_script(directory / "taskline.exe", new, updater.running_pids(), directory)
+        assert "move /Y" in script.read_text()
+    finally:
+        server.shutdown()
+    return ["updater: fake v99.0.0 found, verified, tampered copy rejected"]
 
 
 def selftest(out: Path, screenshots: Path | None) -> int:
@@ -518,17 +768,31 @@ def selftest(out: Path, screenshots: Path | None) -> int:
 
             app.root.update()
             lines.append(f"bar: {app.bar_label.cget('text')}")
-            assert store.progress() == (1, 4), store.progress()
+            assert store.progress() == (1, 5), store.progress()
             app.panel.show()
             app.root.update()
-            app.panel.entry.delete(0, "end")
+            app.panel._clear_placeholder()
             app.panel.entry.insert(0, "Added by selftest")
+            app.panel._clear_placeholder(app.panel.due_entry, app.panel.due_placeholder)
+            app.panel.due_entry.insert(0, "+2d")
+            app.panel._cycle_priority()  # H
             app.panel._add()
             app.root.update()
-            assert store.progress() == (1, 5), store.progress()
+            assert store.progress() == (1, 6), store.progress()
             lines.append(f"after add: {app.bar_label.cget('text')}")
             saved = json.loads((Path(tmp) / "tasks.json").read_text(encoding="utf-8"))
-            assert len(saved) == 5
+            assert len(saved) == 6
+            added = next(t for t in saved if t["description"] == "Added by selftest")
+            assert added["priority"] == "H" and added["due"], added
+            order = [t.description for t in store.today(app.sort) if not t.is_done]
+            assert order[0] == "Send the invoice", order
+            app.toggle_sort()
+            assert app.sort == "priority" and system.load_settings()["sort"] == "priority"
+            order = [t.description for t in store.today(app.sort) if not t.is_done]
+            assert order[:2] == ["Send the invoice", "Added by selftest"], order
+            app.toggle_sort()
+            lines.append("due/priority/sort: OK")
+            lines += _selftest_updater(Path(tmp))
             if screenshots:
                 _screenshots(app, screenshots)
                 lines.append(f"screenshots: {screenshots}")
@@ -580,11 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         return selftest(args.selftest, args.screenshots)
     if not system.acquire_single_instance():
         return 0
-    try:
-        store = TaskStore(system.tasks_path())
-    except ValueError as exc:
-        messagebox.showerror("Taskline", str(exc))
-        return 1
+    store = TaskStore(system.tasks_path(), app_version=__version__)
     TasklineApp(store).run()
     return 0
 
