@@ -250,6 +250,7 @@ class Panel:
         self.show_error("")
         self.entry.delete(0, "end")
         self.due_entry.delete(0, "end")
+        self._show_placeholder(self.due_entry, self.due_placeholder)
         self.new_priority = None
         self._paint_priority()
         self.entry.focus_set()
