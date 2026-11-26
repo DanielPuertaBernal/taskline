@@ -120,6 +120,7 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             Task::batch([open, after(Duration::from_millis(1500), Step::Calendar)])
         }
         Step::Calendar => {
+            app.hovered = None;
             let _ = app.update(Message::OpenCalendar(Target::New));
             after(Duration::from_millis(1200), Step::Shot("windows-panel-dark.png"))
         }
@@ -164,8 +165,9 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             }
             match name {
                 "windows-panel-dark.png" => {
+                    // The calendar stays open; only the palette changes.
                     let _ = app.update(Message::SetTheme(Choice::Light));
-                    let _ = app.update(Message::OpenCalendar(Target::New));
+                    app.hovered = None;
                     after(Duration::from_millis(1200), Step::Shot("windows-panel-light.png"))
                 }
                 "windows-panel-light.png" => {
