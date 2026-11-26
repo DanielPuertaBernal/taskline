@@ -23,7 +23,7 @@ jobs:
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match version $v" }
       - run: cargo test --workspace
-      - run: cargo build --release --locked
+      - run: cargo build --release --locked -p taskline
       - run: ./selftest.ps1
       - run: ./tests/upgrade.ps1
       - uses: actions/upload-artifact@v4

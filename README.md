@@ -102,7 +102,7 @@ Since v2.0 the Windows app is written in Rust with [iced](https://iced.rs) and i
 | Move the bar | Drag it (the position is remembered) |
 | Menu | Right-click the bar or the tray icon: Start with Windows, import/export Taskwarrior JSON, reset position, theme, updates, about, quit |
 | Add a task | Type in the panel and press Enter (`project:Name` groups it) |
-| Due date | Click the **due** / **fecha** field: a calendar opens (arrows, PageUp/PageDown, Enter, Esc; chips Today / Tomorrow / +1 week / No date). Typing `today`, `+3d`, `+2w` or `2026-12-01` still works, and `due:+3d` in the text. Days with pending tasks show a dot |
+| Due date | Click the **due** / **fecha** field (or Alt+Down in it): a calendar opens (arrows, PageUp/PageDown, Enter, Esc; chips Today / Tomorrow / +1 week / No date). The picked day shows as `Thu Nov 26` / `jue 26 nov`. Typing `today`, `+3d`, `+2w` or `2026-12-01` still works, and `due:+3d` in the text. Days with pending tasks show a dot. A click anywhere else closes the calendar (and the priority menu) |
 | Priority | The button next to the due field opens High / Medium / Low / No priority with their icons; or type `priority:H` |
 | Edit | The pencil (or double-click) shows the text with `due:` / `priority:`, plus calendar and priority buttons for that task; Enter saves, Esc cancels |
 | Complete / delete | The round checkbox / the trash icon on each row |
@@ -215,7 +215,7 @@ cargo build --release              # -> windows/target/release/taskline.exe
 ./tests/upgrade.ps1                # published v1.2.0 updates itself to this build, then v2 self-updates
 ```
 
-`TASKLINE_PREVIEW_DIR=/tmp/p cargo test -p taskline preview` renders the panel headlessly into PNGs, handy on Linux.
+`TASKLINE_PREVIEW_DIR=/tmp/p cargo test -p taskline preview` renders the panel headlessly into PNGs, handy on Linux. `cargo run -p taskline-assets --bin social-preview` regenerates `assets/social-preview.png`.
 
 Releases are automatic: pushing a `v*` tag (it must match the version in the code) builds `taskline.exe` on Windows and the Omarchy tarball on Linux, and attaches both plus `SHA256SUMS.txt` to a GitHub Release — the file the updaters verify against.
 

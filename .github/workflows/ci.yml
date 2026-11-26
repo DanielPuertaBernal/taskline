@@ -76,7 +76,7 @@ jobs:
       - name: Tests on Windows
         run: cargo test --workspace
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked -p taskline
       - name: Selftest the built exe (demo data, both themes, updater, Run key)
         env:
           TASKLINE_SELFTEST_REGISTRY: "1"
