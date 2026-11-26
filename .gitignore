@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 *.spec
-windows/taskline.ico
 .atl/
-windows/version_info.txt
+
+# Rust
+windows/target/
