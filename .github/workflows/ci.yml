@@ -21,8 +21,7 @@ jobs:
       - name: Versions agree
         run: |
           v=$(jq -r .version omarchy/danso.tasks/manifest.json)
-          grep -q "__version__ = \"$v\"" windows/taskline/__init__.py
-          grep -q "^version = \"$v\"" windows/pyproject.toml
+          grep -q "^version = \"$v\"" windows/Cargo.toml
           echo "version $v"
       - name: Panel logic tests (due dates, priority, sorting, calendar, themes)
         run: TZ=America/Bogota node tests/logic_test.js
@@ -38,47 +37,56 @@ jobs:
       - name: Package
         run: scripts/package-omarchy.sh
 
-  windows-model:
-    name: Windows app (lint + tests)
+  core:
+    name: Windows app core (fmt, clippy, tests on Linux)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: windows
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
-      - run: pip install pytest ruff pillow
-      - run: ruff check .
-      - run: python -m pytest -q
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p taskline-core --all-targets -- -D warnings
+      - name: Tests (store, v1.0/v1.1/v1.2 data, calendar, updater)
+        run: TZ=America/Bogota cargo test -p taskline-core
 
-  windows-build:
-    name: Windows .exe build + selftest
+  windows:
+    name: Windows .exe (clippy, tests, build, selftest, upgrade from v1.2)
     runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: windows
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
-      - name: Unit tests on Windows (includes the real updater batch script)
-        shell: pwsh
-        run: |
-          python -m pip install pytest pillow
-          python -m pytest -q
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests on Windows
+        run: cargo test --workspace
       - name: Build
-        shell: pwsh
-        run: ./build.ps1
-      - name: Selftest the built exe
-        shell: pwsh
+        run: cargo build --release --locked
+      - name: Selftest the built exe (demo data, both themes, updater, Run key)
+        env:
+          TASKLINE_SELFTEST_REGISTRY: "1"
         run: ./selftest.ps1
+      - name: Upgrade from the published v1.2.0, then self-update
+        run: ./tests/upgrade.ps1
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: taskline-windows
           path: |
-            windows/dist/taskline.exe
-            windows/dist/selftest.txt
-            windows/dist/screenshots/
+            windows/target/release/taskline.exe
+            windows/dist/
