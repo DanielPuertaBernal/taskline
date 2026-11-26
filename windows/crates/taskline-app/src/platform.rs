@@ -221,12 +221,12 @@ mod imp {
         }
     }
 
-    /// A real left click at a screen point (selftest only).
-    pub fn click(x: i32, y: i32) {
+    /// A real left click where the pointer is (selftest only; move it first and let the
+    /// window see the move, or the press lands where the pointer was before).
+    pub fn click() {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, mouse_event,
         };
-        move_cursor(x, y);
         // SAFETY: plain calls.
         unsafe {
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
@@ -349,7 +349,7 @@ mod imp {
         None
     }
     pub fn move_cursor(_x: i32, _y: i32) {}
-    pub fn click(_x: i32, _y: i32) {}
+    pub fn click() {}
     pub fn capture_window(_hwnd: isize) -> Option<(u32, u32, Vec<u8>)> {
         None
     }

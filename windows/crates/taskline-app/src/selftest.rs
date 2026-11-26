@@ -67,6 +67,7 @@ pub enum Step {
     Locate(Mode),
     LocateClicks,
     Click(isize, usize),
+    Press(isize, usize),
     ClickCheck(isize, usize),
     Hover(Mode, isize, u8),
     Grabbed(Mode, isize),
@@ -189,7 +190,7 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
                     line(
                         app,
                         format!(
-                            "clicks: {} real clicks open and close the popovers as specified",
+                            "clicks: {} real clicks checked against the popover rules",
                             CLICKS.len()
                         ),
                     );
@@ -201,7 +202,11 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             }
             let (target, _, _) = CLICKS[i];
             let point = click_point(app, target);
-            platform::click(left + (point.x * scale) as i32, top + (point.y * scale) as i32);
+            platform::move_cursor(left + (point.x * scale) as i32, top + (point.y * scale) as i32);
+            after(Duration::from_millis(250), Step::Press(hwnd, i))
+        }
+        Step::Press(hwnd, i) => {
+            platform::click();
             after(Duration::from_millis(400), Step::ClickCheck(hwnd, i))
         }
         Step::ClickCheck(hwnd, i) => {

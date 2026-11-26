@@ -442,6 +442,7 @@ impl App {
                 self.submit()
             }
             Message::OpenPriority(target) => {
+                self.overlay_cursor = Point::new(-1.0, -1.0);
                 self.popover = match self.popover {
                     Popover::Priority { target: open } if open == target => Popover::None,
                     _ => Popover::Priority { target },
@@ -735,6 +736,8 @@ impl App {
     }
 
     fn open_calendar(&mut self, target: Target) {
+        // The overlay learns where the pointer is from its next move.
+        self.overlay_cursor = Point::new(-1.0, -1.0);
         let now = self.store.now();
         let typed = match target {
             Target::New => self
