@@ -221,6 +221,19 @@ mod imp {
         }
     }
 
+    /// A real left click at a screen point (selftest only).
+    pub fn click(x: i32, y: i32) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, mouse_event,
+        };
+        move_cursor(x, y);
+        // SAFETY: plain calls.
+        unsafe {
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        }
+    }
+
     /// What is on screen inside a window right now (RGBA), as the user sees it, and
     /// not a fresh render: partial-redraw defects show up here.
     pub fn capture_window(hwnd: isize) -> Option<(u32, u32, Vec<u8>)> {
@@ -336,6 +349,7 @@ mod imp {
         None
     }
     pub fn move_cursor(_x: i32, _y: i32) {}
+    pub fn click(_x: i32, _y: i32) {}
     pub fn capture_window(_hwnd: isize) -> Option<(u32, u32, Vec<u8>)> {
         None
     }

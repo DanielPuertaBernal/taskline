@@ -146,6 +146,21 @@ impl Texts {
         }
     }
 
+    /// A picked day as the date field shows it: `Thu Nov 26` / `jue 26 nov` (with the year
+    /// when it is not this year). Storage keeps ISO / Taskwarrior dates.
+    pub fn short_date(&self, day: NaiveDate, today: NaiveDate) -> String {
+        use chrono::Datelike;
+        let month = self.months_short[day.month0() as usize];
+        let weekday = self.weekdays_short[weekday_index(day)];
+        let dmy = !std::ptr::eq(self.ui, &UI_EN);
+        match (dmy, day.year() == today.year()) {
+            (false, true) => format!("{weekday} {month} {}", day.day()),
+            (false, false) => format!("{month} {}, {}", day.day(), day.year()),
+            (true, true) => format!("{weekday} {} {month}", day.day()),
+            (true, false) => format!("{} {month} {}", day.day(), day.year()),
+        }
+    }
+
     /// The due badge: `overdue · Nov 23`, `today`, `tomorrow`, `Fri Nov 27`, `Jan 5, 2027`
     /// (Spanish: `vencida · 23 nov`, `hoy`, `mañana`, `vie 27 nov`, `5 ene 2027`).
     pub fn due_label(&self, day: NaiveDate, today: NaiveDate) -> String {
@@ -437,6 +452,11 @@ mod tests {
         assert_eq!(t.due_label(day(2026, 11, 27), today), "vie 27 nov");
         assert_eq!(t.due_label(day(2027, 1, 5), today), "5 ene 2027");
         assert_eq!(t.month_title(2026, 11), "noviembre 2026");
+        assert_eq!(t.short_date(day(2026, 11, 26), today), "jue 26 nov");
+        assert_eq!(t.short_date(day(2027, 1, 5), today), "5 ene 2027");
+        let en = Language::En.texts();
+        assert_eq!(en.short_date(day(2026, 11, 26), today), "Thu Nov 26");
+        assert_eq!(en.short_date(day(2027, 1, 5), today), "Jan 5, 2027");
         assert_eq!(t.priority_name(Some("M")), "Media");
         assert_eq!(t.priority_name(None), "");
     }

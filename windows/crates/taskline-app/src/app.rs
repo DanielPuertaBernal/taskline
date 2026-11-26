@@ -9,7 +9,7 @@ use chrono::{Datelike, Duration as Days, NaiveDate};
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{Id, operation};
 use iced::window::{self, Level, Position};
-use iced::{Event, Point, Size, Subscription, Task, event, mouse};
+use iced::{Event, Point, Size, Subscription, Task, event};
 use taskline_core::calendar::{self, due_in_text, move_month, priority_in_text, quick_date};
 use taskline_core::i18n::Texts;
 use taskline_core::settings::Settings;
@@ -74,6 +74,9 @@ pub enum Message {
     PickDay(Option<NaiveDate>),
     ChipDays(Option<i64>),
     ClosePopover,
+    OverlayMoved(Point),
+    OverlayPressed,
+    DueAltDown(bool),
     ToggleDone(String),
     StartEdit(String),
     EditText(String),
@@ -85,9 +88,7 @@ pub enum Message {
     FlipTheme,
     SetTheme(Choice),
     SystemTheme(iced::theme::Mode),
-    DueFocused(bool),
     Key(Key, keyboard::Modifiers),
-    PanelPressed,
     // Runtime
     Window(window::Id, window::Event),
     Tick,
@@ -117,6 +118,8 @@ pub struct App {
     pub bar_visible: bool,
     pub input: String,
     pub due: String,
+    /// The day picked in the calendar; the field shows it as `jue 26 nov`.
+    pub due_day: Option<NaiveDate>,
     pub new_priority: Option<&'static str>,
     pub editing: Option<String>,
     pub edit_text: String,
@@ -130,10 +133,11 @@ pub struct App {
     press: Option<Point>,
     dragging: bool,
     position_dirty: Option<(i32, i32)>,
-    picked_at: Option<std::time::Instant>,
+    overlay_cursor: Point,
     tray: Option<Tray>,
     tray_tip: String,
     pub selftest: Option<crate::selftest::Selftest>,
+    pub selftest_progress: (usize, usize),
     update_running: bool,
 }
 
@@ -171,6 +175,7 @@ impl App {
             bar_visible: true,
             input: String::new(),
             due: String::new(),
+            due_day: None,
             new_priority: None,
             editing: None,
             edit_text: String::new(),
@@ -184,10 +189,11 @@ impl App {
             press: None,
             dragging: false,
             position_dirty: None,
-            picked_at: None,
+            overlay_cursor: Point::ORIGIN,
             tray: None,
             tray_tip: String::new(),
             selftest,
+            selftest_progress: (0, 0),
             update_running: false,
         };
         if with_tray {
@@ -408,6 +414,7 @@ impl App {
             }
             Message::Due(text) => {
                 self.due = text;
+                self.due_day = None;
                 self.error = None;
                 if let Popover::Calendar {
                     target: Target::New, ..
@@ -426,6 +433,11 @@ impl App {
                 } = self.popover
                 {
                     return self.update(Message::PickDay(Some(cursor)));
+                }
+                if self.input.trim().is_empty() && self.popover == Popover::None {
+                    // Enter on the date field with nothing to add opens the calendar.
+                    self.open_calendar(Target::New);
+                    return Task::none();
                 }
                 self.submit()
             }
@@ -464,7 +476,13 @@ impl App {
                     return Task::none();
                 }
                 self.open_calendar(target);
-                Task::none()
+                match target {
+                    Target::New => Task::batch([
+                        operation::focus(Id::new(DUE_ID)),
+                        operation::move_cursor_to_end(Id::new(DUE_ID)),
+                    ]),
+                    Target::Edit => Task::none(),
+                }
             }
             Message::CalendarMonth(delta) => {
                 if let Popover::Calendar {
@@ -485,10 +503,11 @@ impl App {
                     return Task::none();
                 };
                 self.popover = Popover::None;
-                self.picked_at = Some(std::time::Instant::now());
                 match target {
                     Target::New => {
-                        self.due = day.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                        let today = self.store.today_date();
+                        self.due_day = day;
+                        self.due = day.map(|d| self.texts.short_date(d, today)).unwrap_or_default();
                         Task::batch([
                             operation::focus(Id::new(DUE_ID)),
                             operation::move_cursor_to_end(Id::new(DUE_ID)),
@@ -505,6 +524,25 @@ impl App {
             }
             Message::ClosePopover => {
                 self.popover = Popover::None;
+                Task::none()
+            }
+            Message::OverlayMoved(point) => {
+                self.overlay_cursor = point;
+                Task::none()
+            }
+            Message::OverlayPressed => self.overlay_pressed(self.overlay_cursor),
+            Message::DueAltDown(focused) => {
+                if focused
+                    && !matches!(
+                        self.popover,
+                        Popover::Calendar {
+                            target: Target::New,
+                            ..
+                        }
+                    )
+                {
+                    self.open_calendar(Target::New);
+                }
                 Task::none()
             }
             Message::ToggleDone(uuid) => {
@@ -614,17 +652,6 @@ impl App {
                 self.system_light = mode == iced::theme::Mode::Light;
                 Task::none()
             }
-            Message::PanelPressed => operation::is_focused(Id::new(DUE_ID)).map(Message::DueFocused),
-            Message::DueFocused(focused) => {
-                // The click that picked a day refocuses the field; do not reopen for it.
-                let just_picked = self
-                    .picked_at
-                    .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
-                if focused && self.popover == Popover::None && !just_picked {
-                    self.open_calendar(Target::New);
-                }
-                Task::none()
-            }
             Message::Key(key, modifiers) => self.key(key, modifiers),
             Message::Window(id, event) => self.window_event(id, event),
             Message::Tick => {
@@ -665,7 +692,11 @@ impl App {
         if self.input.trim().is_empty() {
             return operation::focus(Id::new(INPUT_ID));
         }
-        let due = self.due.trim().to_owned();
+        // The field shows `jue 26 nov`; storage gets the ISO day it stands for.
+        let due = match self.due_day {
+            Some(day) => day.format("%Y-%m-%d").to_string(),
+            None => self.due.trim().to_owned(),
+        };
         let result = self.store.add(
             &self.input,
             (!due.is_empty()).then_some(due.as_str()),
@@ -675,6 +706,7 @@ impl App {
             Ok(_) => {
                 self.input.clear();
                 self.due.clear();
+                self.due_day = None;
                 self.new_priority = None;
                 self.popover = Popover::None;
                 let resize = self.after_change(Ok(()));
@@ -684,10 +716,30 @@ impl App {
         }
     }
 
+    /// A click while a popover is open. The overlay takes the click, so nothing under it
+    /// is pressed: it closes the popover, or toggles it when the click is on its own
+    /// trigger, or opens the other popover when the click is on that one's trigger.
+    pub fn overlay_pressed(&mut self, point: Point) -> Task<Message> {
+        let open = match self.popover {
+            Popover::Calendar { target, .. } => Some(crate::panel::Trigger::Calendar(target)),
+            Popover::Priority { target } => Some(crate::panel::Trigger::Priority(target)),
+            Popover::None => None,
+        };
+        self.popover = Popover::None;
+        match crate::panel::trigger_at(self, point) {
+            Some(trigger) if Some(trigger) == open => Task::none(),
+            Some(crate::panel::Trigger::Calendar(target)) => self.update(Message::OpenCalendar(target)),
+            Some(crate::panel::Trigger::Priority(target)) => self.update(Message::OpenPriority(target)),
+            None => Task::none(),
+        }
+    }
+
     fn open_calendar(&mut self, target: Target) {
         let now = self.store.now();
         let typed = match target {
-            Target::New => quick_date(&self.due, now, self.store.zone),
+            Target::New => self
+                .due_day
+                .or_else(|| quick_date(&self.due, now, self.store.zone)),
             Target::Edit => due_in_text(&self.edit_text, now, self.store.zone),
         };
         let cursor = typed.unwrap_or_else(|| self.store.today_date());
@@ -718,7 +770,7 @@ impl App {
         priority_in_text(&self.edit_text)
     }
 
-    fn key(&mut self, key: Key, _modifiers: keyboard::Modifiers) -> Task<Message> {
+    fn key(&mut self, key: Key, modifiers: keyboard::Modifiers) -> Task<Message> {
         if self.panel.is_none() {
             return Task::none();
         }
@@ -733,8 +785,10 @@ impl App {
                 self.close_panel()
             };
         }
-        if let Key::Named(Named::Tab) = key {
-            return operation::is_focused(Id::new(DUE_ID)).map(Message::DueFocused);
+        if let Key::Named(Named::ArrowDown) = key
+            && modifiers.alt()
+        {
+            return operation::is_focused(Id::new(DUE_ID)).map(Message::DueAltDown);
         }
         if let Popover::Calendar {
             year, month, cursor, ..
@@ -766,6 +820,11 @@ impl App {
             }
             window::Event::Resized(size) if Some(id) == self.panel => {
                 self.panel_size = size;
+                Task::none()
+            }
+            // Leaving the panel (another window, the desktop) closes its popover.
+            window::Event::Unfocused if Some(id) == self.panel => {
+                self.popover = Popover::None;
                 Task::none()
             }
             window::Event::CloseRequested if Some(id) == self.panel => self.close_panel(),
@@ -964,7 +1023,6 @@ fn panel_events(event: Event, _status: event::Status, _window: window::Id) -> Op
         Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
             Some(Message::Key(key, modifiers))
         }
-        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(Message::PanelPressed),
         _ => None,
     }
 }

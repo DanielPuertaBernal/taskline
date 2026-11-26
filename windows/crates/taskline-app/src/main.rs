@@ -244,6 +244,136 @@ mod preview {
         assert!(ran, "every check ran");
     }
 
+    fn center(app: &App, trigger: panel::Trigger) -> iced::Point {
+        panel::triggers(app)
+            .into_iter()
+            .find(|(t, _)| *t == trigger)
+            .map(|(_, r)| r.center())
+            .unwrap()
+    }
+
+    fn kind(app: &App) -> &'static str {
+        match app.popover {
+            app::Popover::None => "none",
+            app::Popover::Calendar { .. } => "calendar",
+            app::Popover::Priority { .. } => "priority",
+        }
+    }
+
+    /// Popovers open only from their triggers; any other click closes them without
+    /// pressing what is underneath; a click on the other trigger opens that one.
+    #[test]
+    fn popover_rules() {
+        use app::Target::{Edit, New};
+        use panel::Trigger::{Calendar, Priority};
+        let tmp = std::env::temp_dir().join(format!("taskline-popover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut app = app(&tmp, "es");
+        let date = center(&app, Calendar(New));
+        let priority = center(&app, Priority(New));
+        let elsewhere = iced::Point::new(500.0, 500.0);
+        let checkbox = iced::Point::new(307.0, 91.0);
+
+        // Nothing but the triggers opens a popover (v2.0.0 opened the calendar on any click).
+        let _ = app.update(Message::Input("x".into()));
+        assert_eq!(kind(&app), "none");
+        // The date field toggles the calendar.
+        let _ = app.update(Message::OpenCalendar(New));
+        assert_eq!(kind(&app), "calendar");
+        let _ = app.overlay_pressed(date);
+        assert_eq!(
+            kind(&app),
+            "none",
+            "a click on the open popover's trigger closes it"
+        );
+        // A click anywhere else closes it and is consumed: the task under it is untouched.
+        let _ = app.update(Message::OpenCalendar(New));
+        let before = app.store.progress();
+        let _ = app.overlay_pressed(checkbox);
+        assert_eq!((kind(&app), app.store.progress()), ("none", before));
+        let _ = app.update(Message::OpenCalendar(New));
+        let _ = app.overlay_pressed(elsewhere);
+        assert_eq!(kind(&app), "none");
+        // Another trigger hands over: one popover at a time.
+        let _ = app.update(Message::OpenPriority(New));
+        assert_eq!(kind(&app), "priority");
+        let _ = app.overlay_pressed(date);
+        assert_eq!(kind(&app), "calendar");
+        let _ = app.overlay_pressed(priority);
+        assert_eq!(kind(&app), "priority");
+        let _ = app.overlay_pressed(priority);
+        assert_eq!(kind(&app), "none");
+        // Esc and leaving the window close it.
+        let _ = app.update(Message::OpenCalendar(New));
+        let _ = app.update(Message::Key(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            Default::default(),
+        ));
+        assert_eq!(kind(&app), "none");
+        let _ = app.update(Message::OpenPriority(New));
+        let panel_id = app.panel.unwrap();
+        let _ = app.update(Message::Window(panel_id, window::Event::Unfocused));
+        assert_eq!(kind(&app), "none");
+        // Enter on an empty add row opens the calendar; with text it adds the task.
+        let _ = app.update(Message::Input(String::new()));
+        let _ = app.update(Message::DueSubmit);
+        assert_eq!(kind(&app), "calendar");
+        let _ = app.update(Message::ClosePopover);
+        // While editing, its calendar and priority icons follow the same rules.
+        let uuid = app.store.today(app.sort)[1].uuid().to_owned();
+        let _ = app.update(Message::StartEdit(uuid));
+        let _ = app.update(Message::OpenCalendar(Edit));
+        let edit_priority = center(&app, Priority(Edit));
+        let _ = app.overlay_pressed(edit_priority);
+        assert!(matches!(app.popover, app::Popover::Priority { target: Edit }));
+        let _ = app.overlay_pressed(elsewhere);
+        assert_eq!(kind(&app), "none");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The date field shows a picked day like the Omarchy panel; storage stays ISO.
+    #[test]
+    fn date_field_shows_the_day_and_saves_iso() {
+        let tmp = std::env::temp_dir().join(format!("taskline-due-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut app = app(&tmp, "es");
+        let today = app.store.today_date();
+        let day = today + chrono::Duration::days(3);
+        let _ = app.update(Message::Input("Pick me".into()));
+        let _ = app.update(Message::OpenCalendar(app::Target::New));
+        let _ = app.update(Message::PickDay(Some(day)));
+        assert_eq!(app.due, app.texts.short_date(day, today));
+        assert!(!app.due.contains('-'), "no ISO in the field: {}", app.due);
+        let _ = app.update(Message::Submit);
+        let task = app
+            .store
+            .all()
+            .into_iter()
+            .find(|t| t.description() == "Pick me")
+            .unwrap();
+        assert_eq!(task.due().map(|d| app.store.local_date(d)), Some(day));
+        assert_eq!(app.due, "");
+        // Typed quick input still works and replaces a picked day.
+        let _ = app.update(Message::Input("Typed".into()));
+        let _ = app.update(Message::OpenCalendar(app::Target::New));
+        let _ = app.update(Message::PickDay(Some(day)));
+        let _ = app.update(Message::Due("+1d".into()));
+        let _ = app.update(Message::Submit);
+        let task = app
+            .store
+            .all()
+            .into_iter()
+            .find(|t| t.description() == "Typed")
+            .unwrap();
+        assert_eq!(
+            task.due().map(|d| app.store.local_date(d)),
+            Some(today + chrono::Duration::days(1))
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn render_previews() {
         let Ok(out) = std::env::var("TASKLINE_PREVIEW_DIR") else {

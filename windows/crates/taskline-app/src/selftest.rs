@@ -65,6 +65,9 @@ pub enum Step {
     Shot(&'static str),
     Saved(&'static str, Screenshot),
     Locate(Mode),
+    LocateClicks,
+    Click(isize, usize),
+    ClickCheck(isize, usize),
     Hover(Mode, isize, u8),
     Grabbed(Mode, isize),
     Finish,
@@ -120,7 +123,7 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
         Step::Start => {
             let open = app.update(Message::TogglePanel);
             logic(app);
-            Task::batch([open, after(Duration::from_millis(1500), Step::Calendar)])
+            Task::batch([open, after(Duration::from_millis(1500), Step::LocateClicks)])
         }
         Step::Calendar => {
             app.hovered = None;
@@ -171,6 +174,56 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
                 "windows-panel-light.png" => Task::done(Message::Selftest(Step::Locate(Mode::Light))),
                 _ => Task::done(Message::Selftest(Step::Finish)),
             }
+        }
+        Step::LocateClicks => match app.panel {
+            Some(id) => {
+                window::run(id, |w| crate::raw_hwnd(w)).map(|hwnd| Message::Selftest(Step::Click(hwnd, 0)))
+            }
+            None => Task::done(Message::Selftest(Step::Calendar)),
+        },
+        Step::Click(hwnd, i) => {
+            let Some((left, top, scale)) = platform::window_origin(hwnd).filter(|_| i < CLICKS.len()) else {
+                if i == 0 {
+                    line(app, "clicks: real mouse input unavailable on this system");
+                } else {
+                    line(
+                        app,
+                        format!(
+                            "clicks: {} real clicks open and close the popovers as specified",
+                            CLICKS.len()
+                        ),
+                    );
+                }
+                return Task::done(Message::Selftest(Step::Calendar));
+            };
+            if i == 0 {
+                app.selftest_progress = app.store.progress();
+            }
+            let (target, _, _) = CLICKS[i];
+            let point = click_point(app, target);
+            platform::click(left + (point.x * scale) as i32, top + (point.y * scale) as i32);
+            after(Duration::from_millis(400), Step::ClickCheck(hwnd, i))
+        }
+        Step::ClickCheck(hwnd, i) => {
+            let (target, expected, why) = CLICKS[i];
+            let got = match app.popover {
+                Popover::None => "none",
+                Popover::Calendar { .. } => "calendar",
+                Popover::Priority { .. } => "priority",
+            };
+            check(
+                app,
+                got == expected,
+                format!("click {i} on {target}: expected {expected}, got {got} ({why})"),
+            );
+            let progress = app.store.progress();
+            let before = app.selftest_progress;
+            check(
+                app,
+                progress == before,
+                format!("click {i} on {target} changed a task ({progress:?})"),
+            );
+            Task::done(Message::Selftest(Step::Click(hwnd, i + 1)))
         }
         Step::Locate(mode) => match app.panel {
             Some(id) => window::run(id, |w| crate::raw_hwnd(w))
@@ -285,6 +338,44 @@ fn screen_check(app: &mut App, mode: Mode, hwnd: isize) {
     );
 }
 
+/// Real clicks on the panel: (where, popover expected afterwards, rule).
+const CLICKS: [(&str, &str, &str); 11] = [
+    ("date", "calendar", "the date field opens the calendar"),
+    ("list", "none", "a click elsewhere closes it"),
+    ("date", "calendar", "reopens"),
+    ("date", "none", "the date field toggles it closed"),
+    ("priority", "priority", "the priority button opens its menu"),
+    ("date", "calendar", "another trigger opens its own popover"),
+    (
+        "checkbox",
+        "none",
+        "closes without completing the task underneath",
+    ),
+    ("date", "calendar", "reopens"),
+    ("input", "none", "the new-task field only closes it"),
+    ("input", "none", "and never opens the calendar"),
+    ("list", "none", "nor does an empty area"),
+];
+
+fn click_point(app: &App, target: &str) -> iced::Point {
+    use crate::app::Target;
+    use crate::panel::Trigger;
+    let center = |trigger: Trigger| {
+        crate::panel::triggers(app)
+            .into_iter()
+            .find(|(t, _)| *t == trigger)
+            .map(|(_, r)| r.center())
+            .unwrap_or_default()
+    };
+    match target {
+        "date" => center(Trigger::Calendar(Target::New)),
+        "priority" => center(Trigger::Priority(Target::New)),
+        "checkbox" => iced::Point::new(307.0, 91.0),
+        "input" => iced::Point::new(400.0, 42.0),
+        _ => iced::Point::new(520.0, app.panel_size.height - 60.0),
+    }
+}
+
 fn after(delay: Duration, step: Step) -> Task<Message> {
     Task::perform(sleep(delay), move |()| Message::Selftest(step.clone()))
 }
@@ -361,11 +452,15 @@ pub(crate) fn logic(app: &mut App) {
         "arrows move the cursor",
     );
     let _ = app.update(Message::DueSubmit);
-    let expected = (today + Days::days(8)).format("%Y-%m-%d").to_string();
+    let picked = today + Days::days(8);
+    let shown = app.texts.short_date(picked, today);
     check(
         app,
-        app.popover == Popover::None && app.due == expected,
-        format!("Enter picks the day ({})", app.due),
+        app.popover == Popover::None && app.due_day == Some(picked) && app.due == shown,
+        format!(
+            "Enter picks the day and the field shows it as `{shown}` ({})",
+            app.due
+        ),
     );
     let _ = app.update(Message::OpenPriority(Target::New));
     let _ = app.update(Message::PickPriority(Some("M")));
