@@ -174,7 +174,7 @@ Updates replace the program, never your tasks.
 |---|---|
 | <img src="assets/screenshots/omarchy-bar.png" alt="Omarchy bar widget" width="380"> | <img src="assets/screenshots/windows-bar.png" alt="Windows bar" width="300"> |
 
-<sub>Omarchy screenshots are from a real desktop, with the owner's task names blurred (dots in the calendar mark days with tasks). Windows screenshots are captured automatically by CI on `windows-latest` from the built `taskline.exe`, using demo tasks with due dates and priority icons.</sub>
+<sub>Omarchy screenshots are from a real desktop running the panel against demo tasks in a temporary Taskwarrior data folder (dots in the calendar mark days with tasks). Windows screenshots are captured automatically by CI on `windows-latest` from the built `taskline.exe`, using demo tasks with due dates and priority icons.</sub>
 
 ## 🛠️ Build from source
 
