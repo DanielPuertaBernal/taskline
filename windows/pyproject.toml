@@ -1,6 +1,6 @@
 [project]
 name = "taskline"
-version = "1.0.0"
+version = "1.1.0"
 description = "Daily task progress bar for Windows, a sibling of the Omarchy Taskline widget"
 authors = [{ name = "Daniel Puerta" }]
 license = "MIT"
