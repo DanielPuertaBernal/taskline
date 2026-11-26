@@ -80,6 +80,7 @@ jobs:
       - name: Selftest the built exe (demo data, both themes, updater, Run key)
         env:
           TASKLINE_SELFTEST_REGISTRY: "1"
+          ICED_BACKEND: tiny-skia
         run: ./selftest.ps1
       - name: Upgrade from the published v1.2.0, then self-update
         run: ./tests/upgrade.ps1

@@ -192,6 +192,93 @@ mod imp {
             .show();
     }
 
+    /// Top-left corner of a window on screen (physical pixels) and its DPI scale.
+    pub fn window_origin(hwnd: isize) -> Option<(i32, i32, f32)> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: a live HWND of ours and a valid RECT.
+        unsafe {
+            if GetWindowRect(hwnd as _, &mut rect) == 0 {
+                return None;
+            }
+            let dpi = GetDpiForWindow(hwnd as _).max(96);
+            Some((rect.left, rect.top, dpi as f32 / 96.0))
+        }
+    }
+
+    /// Moves the real mouse pointer (selftest only), so the window gets hover events.
+    pub fn move_cursor(x: i32, y: i32) {
+        // SAFETY: plain call.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y);
+        }
+    }
+
+    /// What is on screen inside a window right now (RGBA), as the user sees it, and
+    /// not a fresh render: partial-redraw defects show up here.
+    pub fn capture_window(hwnd: isize) -> Option<(u32, u32, Vec<u8>)> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::*;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: standard GDI screen copy; every handle is released.
+        unsafe {
+            if GetWindowRect(hwnd as _, &mut rect) == 0 {
+                return None;
+            }
+            let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+            if w <= 0 || h <= 0 {
+                return None;
+            }
+            let screen = GetDC(std::ptr::null_mut());
+            let memory = CreateCompatibleDC(screen);
+            let bitmap = CreateCompatibleBitmap(screen, w, h);
+            let old = SelectObject(memory, bitmap as _);
+            BitBlt(memory, 0, 0, w, h, screen, rect.left, rect.top, SRCCOPY);
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = w;
+            info.bmiHeader.biHeight = -h;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bgra = vec![0u8; (w * h * 4) as usize];
+            let lines = GetDIBits(
+                memory,
+                bitmap,
+                0,
+                h as u32,
+                bgra.as_mut_ptr() as _,
+                &mut info,
+                DIB_RGB_COLORS,
+            );
+            SelectObject(memory, old);
+            DeleteObject(bitmap as _);
+            DeleteDC(memory);
+            ReleaseDC(std::ptr::null_mut(), screen);
+            if lines == 0 {
+                return None;
+            }
+            for px in bgra.as_chunks_mut::<4>().0 {
+                px.swap(0, 2);
+                px[3] = 255;
+            }
+            Some((w as u32, h as u32, bgra))
+        }
+    }
+
     pub fn info(text: &str) {
         message(rfd::MessageLevel::Info, text);
     }
@@ -244,6 +331,13 @@ mod imp {
     }
     pub fn launch_script(_script: &Path) -> Result<(), String> {
         Err("updates install on Windows only".into())
+    }
+    pub fn window_origin(_hwnd: isize) -> Option<(i32, i32, f32)> {
+        None
+    }
+    pub fn move_cursor(_x: i32, _y: i32) {}
+    pub fn capture_window(_hwnd: isize) -> Option<(u32, u32, Vec<u8>)> {
+        None
     }
     pub fn info(text: &str) {
         eprintln!("taskline: {text}");

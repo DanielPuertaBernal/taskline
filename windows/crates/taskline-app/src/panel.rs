@@ -502,6 +502,15 @@ fn icons_check() -> iced::widget::svg::Handle {
 // ------------------------------------------------------------------- popovers --
 
 /// The open popover and where it goes: under its anchor, or above when there is no room.
+/// Where the calendar of the add row opens (the selftest hovers its days).
+pub fn new_calendar_origin(width: f32) -> (f32, f32) {
+    let right = width - RIGHT_PAD - PRIORITY_W - 8.0;
+    (
+        (right - CAL_W).clamp(12.0, (width - CAL_W - 12.0).max(12.0)),
+        PAD + FIELD_H + 6.0,
+    )
+}
+
 fn popover<'a>(
     app: &'a App,
     p: &'static Palette,
