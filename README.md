@@ -28,7 +28,8 @@
 |---|---|
 | 📊 **Progress at a glance** | `▰▰▰▱▱▱▱▱▱▱ 1/4` — tasks completed today against everything still open. No app to open, no dashboard to check. |
 | ⚡ **One click to manage** | Click the bar to open a panel: add, complete, edit or delete tasks and see today's progress as a donut. |
-| 📅 **Due dates & priorities** | Give a task a due date (`today`, `tomorrow`, `+3d`, `2026-12-01`) and a priority (H / M / L). Overdue dates turn red, today's orange. Sort by due date or by priority. |
+| 📅 **Due dates & priorities** | Pick a due date in a month calendar (Monday first, days with tasks marked) or type `today`, `+3d`, `2026-12-01`. Priorities High / Medium / Low show as icons. Overdue dates turn red, today's orange. Sort by due date or by priority. |
+| 🌗 **Light and dark** | Tokyo Night and Tokyo Night Day, switched from the panel (or **Auto** to follow the system). Text colors meet WCAG AA contrast. |
 | 🔄 **Updates itself** | On launch (once a day) Taskline checks for a new release, verifies its SHA256 checksum and installs it. You can turn it off. |
 | 🌙 **Tokyo Night look** | Matches the default Omarchy theme on Linux, and brings the same style to Windows. |
 | 🐧 **Built on Taskwarrior** | On Omarchy it reads and writes your real [Taskwarrior 3](https://taskwarrior.org) data, and refreshes instantly through a Taskwarrior hook. |
@@ -59,7 +60,17 @@ task add Write the weekly report due:tomorrow priority:H
 task 1 done
 ```
 
-In the panel, type the task, optionally a date in the **fecha** field (`hoy`, `mañana`, `+3d`, `2026-12-01`, or anything Taskwarrior understands such as `friday`) and click **–** to cycle the priority H → M → L. **Orden** switches between sorting by date and by priority; the choice is remembered. Editing a task shows `due:` and `priority:` in the text — delete them to clear the date or priority.
+In the panel, type the task and press Enter. Optional extras:
+
+| | |
+|---|---|
+| Due date | Click or focus the **fecha** field: a month calendar opens (arrows move, PageUp/PageDown change month, Enter picks, Esc closes; chips **Hoy**, **Mañana**, **+1 semana**, **Sin fecha**). You can still type `hoy`, `mañana`, `+3d`, `2026-12-01` or anything Taskwarrior understands such as `friday`. Days that already have pending tasks show a dot. |
+| Priority | The button next to the date opens **Alta** / **Media** / **Baja** / **Sin prioridad**; each task shows its priority icon. |
+| Editing | ✎ opens the text with `due:` and `priority:`; the calendar and priority buttons in that row set them, or delete the words to clear them. |
+| Sort | **Orden** switches between date and priority; remembered. |
+| Theme | The **Tema** switch (bottom left) flips Claro / Oscuro; **Auto** follows the Omarchy theme. Saved as `theme=` in `~/.config/taskline/omarchy.conf`. |
+
+`omarchy-shell danso.tasks-panel calendar` opens the panel with the calendar showing (handy for a keybinding), and `omarchy-shell danso.tasks-panel setTheme light|dark|system` sets the theme.
 
 <details>
 <summary>What the installer does</summary>
@@ -89,9 +100,11 @@ It is idempotent — run it again any time to update — and it never touches yo
 | Move the bar | Drag it (the position is remembered) |
 | Menu | Right-click the bar: Start with Windows, import/export Taskwarrior JSON, reset position, quit |
 | Add a task | Type in the panel and press Enter (`project:Name` groups it) |
-| Due date | Type `today`, `tomorrow`, `+3d`, `+2w` or `2026-12-01` in the **due** field, or `due:+3d` in the text |
-| Priority | Click **–** next to the due field to cycle H → M → L, or type `priority:H` |
+| Due date | Click the **due** field: a calendar opens (arrows, PageUp/PageDown, Enter, Esc; chips Today / Tomorrow / +1 week / No date; names follow your Windows language). Typing `today`, `+3d`, `+2w` or `2026-12-01` still works, and `due:+3d` in the text |
+| Priority | The button next to the due field opens High / Medium / Low / No priority with their icons; or type `priority:H` |
+| Edit | ✎ shows the text with `due:` / `priority:`, plus calendar and priority buttons for that task |
 | Sort | **Sort: due date** / **Sort: priority** in the panel (remembered) |
+| Theme | The **Theme** switch in the panel (light ↔ dark) and **Auto** to follow Windows; also right-click → **Theme** or the tray menu. Saved in `%APPDATA%\taskline\settings.json` |
 | Complete / edit / delete | ☐ / ✎ (or double-click) / ✕ on each row |
 | Updates | Right-click → **Update automatically** (on by default) or **Check for updates now**; **About Taskline** shows the version |
 
@@ -149,15 +162,19 @@ Updates replace the program, never your tasks.
 
 ## 📸 Screenshots
 
-| Omarchy — bar widget | Omarchy — task panel |
+| Omarchy — dark (Oscuro) | Omarchy — light (Claro) |
 |---|---|
-| <img src="assets/screenshots/omarchy-bar.png" alt="Omarchy bar widget" width="380"> | <img src="assets/screenshots/omarchy-panel.png" alt="Omarchy task panel with the date field, priority button and sort toggle" width="480"> |
+| <img src="assets/screenshots/omarchy-panel-dark.png" alt="Omarchy task panel in Tokyo Night with the month calendar open" width="480"> | <img src="assets/screenshots/omarchy-panel-light.png" alt="Omarchy task panel in Tokyo Night Day with the month calendar open" width="480"> |
 
-| Windows — bar | Windows — task panel |
+| Windows — dark | Windows — light |
 |---|---|
-| <img src="assets/screenshots/windows-bar.png" alt="Windows bar" width="300"> | <img src="assets/screenshots/windows-panel.png" alt="Windows task panel" width="480"> |
+| <img src="assets/screenshots/windows-panel-dark.png" alt="Windows task panel in Tokyo Night with the calendar" width="480"> | <img src="assets/screenshots/windows-panel-light.png" alt="Windows task panel in Tokyo Night Day with the calendar" width="480"> |
 
-<sub>Omarchy screenshots are from a real desktop, with the owner's task names blurred. Windows screenshots are captured automatically by CI on `windows-latest` from the built `taskline.exe`, using demo tasks with due dates (overdue in red, today in orange) and priority markers.</sub>
+| Omarchy — bar widget | Windows — bar |
+|---|---|
+| <img src="assets/screenshots/omarchy-bar.png" alt="Omarchy bar widget" width="380"> | <img src="assets/screenshots/windows-bar.png" alt="Windows bar" width="300"> |
+
+<sub>Omarchy screenshots are from a real desktop, with the owner's task names blurred (dots in the calendar mark days with tasks). Windows screenshots are captured automatically by CI on `windows-latest` from the built `taskline.exe`, using demo tasks with due dates and priority icons.</sub>
 
 ## 🛠️ Build from source
 
@@ -228,6 +245,10 @@ Nothing about you or your tasks. The only network access is downloading releases
 - [ ] macOS menu bar version
 
 Ideas and bug reports are welcome in [Issues](https://github.com/DanielPuertaBernal/taskline/issues).
+
+## 🙏 Credits
+
+Priority icons are from [Lucide](https://lucide.dev) (ISC license, see [`assets/icons/LICENSE-lucide.txt`](assets/icons/LICENSE-lucide.txt)). Colors are the [Tokyo Night](https://github.com/folke/tokyonight.nvim) palettes.
 
 ---
 

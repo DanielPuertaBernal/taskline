@@ -27,6 +27,10 @@ class Tray:
                 lambda: app.post(lambda: app.set_autostart(not system.autostart_enabled())),
                 checked=lambda _item: system.autostart_enabled(),
             ),
+            pystray.MenuItem("Theme", pystray.Menu(*[
+                pystray.MenuItem(label, self._set_theme(value), checked=self._is_theme(value), radio=True)
+                for value, label in (("light", "Light"), ("dark", "Dark"), ("system", "System"))
+            ])),
             pystray.MenuItem(
                 "Update automatically",
                 lambda: app.post(lambda: (app.auto_update_var.set(not app.auto_update_var.get()),
@@ -39,6 +43,12 @@ class Tray:
             pystray.MenuItem("Quit", lambda: app.post(app.quit)),
         )
         self.icon = pystray.Icon("taskline", logo(64), "Taskline", menu)
+
+    def _set_theme(self, value: str):
+        return lambda: self.app.post(lambda: self.app.set_theme(value))
+
+    def _is_theme(self, value: str):
+        return lambda _item: self.app.theme_var.get() == value
 
     def run(self) -> None:
         self.icon.run()

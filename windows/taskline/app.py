@@ -18,13 +18,15 @@ import tempfile
 import threading
 import tkinter as tk
 import traceback
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
-from . import __version__, system, theme, updater
-from .model import PRIORITIES, SORT_DUE, SORT_PRIORITY, SORTS, ReadOnlyError, Task, TaskStore, progress_bar
+from . import __version__, i18n, priority_icons, system, theme, updater
+from . import calendar_model as cal
+from .datepicker import DatePicker
+from .model import SORT_DUE, SORT_PRIORITY, SORTS, ReadOnlyError, Task, TaskStore, progress_bar
 
 REFRESH_MS = 60_000
 POLL_MS = 150
@@ -32,6 +34,8 @@ DRAG_THRESHOLD = 4
 UPDATE_DELAY_MS = 4_000
 NOTICE_MS = 6_000
 SORT_LABELS = {SORT_DUE: "Sort: due date", SORT_PRIORITY: "Sort: priority"}
+THEME_CHOICES = (("light", "Light"), ("dark", "Dark"), ("system", "System"))
+TIP_DELAY_MS = 450
 
 
 class Tooltip:
@@ -39,29 +43,110 @@ class Tooltip:
         self.widget = widget
         self.text_fn = text_fn
         self.tip: tk.Toplevel | None = None
-        widget.bind("<Enter>", self.show, add="+")
+        self._job = None
+        widget.bind("<Enter>", self.schedule, add="+")
         widget.bind("<Leave>", self.hide, add="+")
         widget.bind("<ButtonPress>", self.hide, add="+")
 
+    def schedule(self, _event=None) -> None:
+        self._cancel()
+        self._job = self.widget.after(TIP_DELAY_MS, self.show)
+
+    def _cancel(self) -> None:
+        if self._job is not None:
+            self.widget.after_cancel(self._job)
+            self._job = None
+
     def show(self, _event=None) -> None:
+        self._job = None
         text = self.text_fn()
-        if not text or self.tip:
+        if not text or self.tip or not self.widget.winfo_exists():
             return
+        # Themed like the rest of the app (surface, border, small text).
         self.tip = tk.Toplevel(self.widget)
         self.tip.overrideredirect(True)
         self.tip.attributes("-topmost", True)
+        self.tip.configure(bg=theme.BORDER)
         tk.Label(
             self.tip, text=text, justify="left", bg=theme.SURFACE, fg=theme.FG,
-            font=(theme.FONT, 9), padx=10, pady=6,
-        ).pack()
+            font=(theme.FONT, 9), padx=10, pady=5,
+        ).pack(padx=1, pady=1)
         x = self.widget.winfo_rootx()
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
         self.tip.geometry(f"+{x}+{y}")
 
     def hide(self, _event=None) -> None:
+        self._cancel()
         if self.tip:
             self.tip.destroy()
             self.tip = None
+
+
+def reduced_motion() -> bool:
+    """Windows' "Show animations" setting is off (SPI_GETCLIENTAREAANIMATION)."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    enabled = ctypes.c_bool(True)
+    try:
+        ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0)
+    except (AttributeError, OSError):
+        return False
+    return not enabled.value
+
+
+class ThemeSwitch(tk.Canvas):
+    """Pill switch: sun on the left (light), moon on the right (dark), sliding knob.
+
+    Click, Space or Enter flips it; the knob slides (instantly when Windows
+    animations are off) and then `on_toggle(light)` runs.
+    """
+
+    W, H, PAD = 56, 26, 3
+
+    def __init__(self, master: tk.Misc, light: bool, on_toggle) -> None:
+        super().__init__(master, width=self.W, height=self.H, bg=master.cget("bg"), highlightthickness=2,
+                         highlightbackground=master.cget("bg"), highlightcolor=theme.ACCENT, takefocus=1,
+                         cursor="hand2")
+        self.light = light
+        self.on_toggle = on_toggle
+        self.knob_x = self._target()
+        self.bind("<Button-1>", lambda _e: self.toggle())
+        self.bind("<space>", lambda _e: self.toggle())
+        self.bind("<Return>", lambda _e: self.toggle())
+        self.draw()
+
+    def _target(self) -> float:
+        return self.PAD if self.light else self.W - self.H + self.PAD
+
+    def draw(self) -> None:
+        self.delete("all")
+        w, h, r = self.W, self.H, self.H / 2
+        track = theme.HOVER
+        self.create_oval(0, 0, h, h, fill=track, outline="")
+        self.create_oval(w - h, 0, w, h, fill=track, outline="")
+        self.create_rectangle(r, 0, w - r, h, fill=track, outline="")
+        size = h - 2 * self.PAD
+        self.create_oval(self.knob_x, self.PAD, self.knob_x + size, self.PAD + size, fill=theme.ACCENT, outline="")
+        self.create_text(r, r, text="☀", fill=theme.BG if self.light else theme.MUTED, font=(theme.SYMBOL_FONT, 9))
+        self.create_text(w - r, r, text="☾", fill=theme.MUTED if self.light else theme.BG,
+                         font=(theme.SYMBOL_FONT, 9))
+
+    def toggle(self) -> None:
+        self.light = not self.light
+        self._slide(0 if reduced_motion() else 8)
+
+    def _slide(self, steps: int) -> None:
+        target = self._target()
+        if steps <= 0:
+            self.knob_x = target
+            self.draw()
+            self.on_toggle(self.light)
+            return
+        self.knob_x += (target - self.knob_x) / steps
+        self.draw()
+        self.after(16, lambda: self._slide(steps - 1))
 
 
 class Panel:
@@ -71,6 +156,10 @@ class Panel:
         self.app = app
         self.editing: str | None = None
         self.new_priority: str | None = None
+        self.texts = i18n.calendar_texts()
+        self.images: dict[tuple, object] = {}  # PhotoImages must stay referenced
+        self.picker_field: tk.Entry | None = None
+        self.picker_edit = False
         self.win = tk.Toplevel(app.root)
         self.win.title("Taskline")
         self.win.configure(bg=theme.BG)
@@ -81,6 +170,7 @@ class Panel:
         self.win.withdraw()
         if app.icon_photo is not None:
             self.win.iconphoto(False, app.icon_photo)
+        self.picker = DatePicker(self.win, texts=self.texts)
 
         self.font = tkfont.Font(family=theme.FONT, size=11)
         self.font_done = tkfont.Font(family=theme.FONT, size=11, overstrike=1)
@@ -93,8 +183,8 @@ class Panel:
             summary, text="Today's tasks", bg=theme.BG, fg=theme.FG,
             font=(theme.FONT, 18, "bold"), anchor="w",
         ).pack(fill="x")
-        self.pie = tk.Canvas(summary, width=200, height=200, bg=theme.BG, highlightthickness=0)
-        self.pie.pack(pady=18, anchor="w")
+        self.pie = tk.Canvas(summary, width=180, height=180, bg=theme.BG, highlightthickness=0)
+        self.pie.pack(pady=12, anchor="w")
         self.done_label = tk.Label(summary, bg=theme.BG, fg=theme.ACCENT, font=(theme.FONT, 12), anchor="w")
         self.done_label.pack(fill="x")
         self.pending_label = tk.Label(summary, bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 12), anchor="w")
@@ -104,11 +194,26 @@ class Panel:
         )
         self.sort_button.pack(anchor="w", pady=(14, 0))
         self.sort_button.bind("<Button-1>", lambda _e: self.app.toggle_sort())
+        # Theme: Light/Dark switch, plus "Auto" to follow Windows' app theme.
+        themes = tk.Frame(summary, bg=theme.BG)
+        themes.pack(anchor="w", pady=(10, 0))
+        box = tk.Frame(themes, bg=theme.SURFACE, padx=10, pady=4)
+        box.pack(side="left")
+        tk.Label(box, text="Theme", bg=theme.SURFACE, fg=theme.FG, font=(theme.FONT, 10)).pack(side="left")
+        self.theme_switch = ThemeSwitch(box, light=theme.MODE == "light", on_toggle=self._switch_theme)
+        self.theme_switch.pack(side="left", padx=(8, 0))
+        auto = app.theme_var.get() == "system"
+        self.auto_chip = tk.Label(
+            themes, text="Auto", font=(theme.FONT, 9), padx=8, pady=2, cursor="hand2",
+            bg=theme.ACCENT if auto else theme.SURFACE, fg=theme.BG if auto else theme.MUTED,
+        )
+        self.auto_chip.pack(side="left", padx=(8, 0))
+        self.auto_chip.bind("<Button-1>", lambda _e: self.app.post(lambda: self.app.set_theme("system")))
+        Tooltip(self.auto_chip, lambda: "Follow the Windows app theme")
         tk.Label(
             summary,
-            text="Enter adds · Esc closes\nDue: today, tomorrow, +3d\nor 2026-12-01\n"
-                 "Inline: due:+3d priority:H\nproject:Name",
-            bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 9), justify="left", anchor="w",
+            text="Enter adds · Esc closes\nDue: calendar, today, +3d\npriority:H · project:Name",
+            bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 9), justify="left", anchor="w", pady=4,
         ).pack(fill="x", side="bottom")
 
         # ---- list column
@@ -122,17 +227,25 @@ class Panel:
         add_row.pack(fill="x")
         self.add_row = add_row
         self.priority_button = tk.Label(
-            add_row, bg=theme.SURFACE, font=(theme.FONT, 11, "bold"), width=3, pady=8, cursor="hand2",
+            add_row, bg=theme.SURFACE, fg=theme.MUTED, font=(theme.FONT, 11, "bold"), width=36, height=36,
+            cursor="hand2",
         )
         self.priority_button.pack(side="right", padx=(6, 0))
-        self.priority_button.bind("<Button-1>", lambda _e: self._cycle_priority())
+        self.priority_button.bind("<Button-1>", lambda _e: self._priority_menu(
+            self.priority_button, self.new_priority, self._set_new_priority))
+        Tooltip(self.priority_button, lambda: "Priority: " + (self.texts.priority_name(self.new_priority)
+                                                             or self.texts.priorities[3]))
         self.due_entry = tk.Entry(
             add_row, bg=theme.SURFACE, fg=theme.FG, insertbackground=theme.FG, relief="flat", width=11,
             font=(theme.FONT, 12), highlightthickness=1, highlightbackground=theme.SURFACE,
             highlightcolor=theme.ACCENT,
         )
         self.due_entry.pack(side="right", padx=(6, 0), ipady=8)
-        self.due_entry.bind("<Return>", self._add)
+        self.due_entry.bind("<Return>", self._due_return)
+        self.due_entry.bind("<KP_Enter>", self._due_return)
+        self.due_entry.bind("<KeyPress>", lambda e: self._picker_key(e, self.due_entry, False), add="+")
+        self.due_entry.bind("<KeyRelease>", lambda _e: self._follow(self.due_entry, False), add="+")
+        self.due_entry.bind("<Button-1>", lambda _e: self.win.after_idle(self._open_due_picker), add="+")
         self.entry = tk.Entry(
             add_row, bg=theme.SURFACE, fg=theme.FG, insertbackground=theme.FG, relief="flat",
             font=(theme.FONT, 12), highlightthickness=1, highlightbackground=theme.SURFACE,
@@ -146,8 +259,8 @@ class Panel:
         self._show_placeholder(self.due_entry, self.due_placeholder)
         self.entry.bind("<FocusIn>", lambda _e: self._clear_placeholder())
         self.entry.bind("<FocusOut>", lambda _e: self._show_placeholder())
-        self.due_entry.bind("<FocusIn>", lambda _e: self._clear_placeholder(self.due_entry, self.due_placeholder))
-        self.due_entry.bind("<FocusOut>", lambda _e: self._show_placeholder(self.due_entry, self.due_placeholder))
+        self.due_entry.bind("<FocusIn>", self._due_focus_in)
+        self.due_entry.bind("<FocusOut>", self._due_focus_out)
         self.error = tk.Label(main, bg=theme.BG, fg=theme.RED, font=(theme.FONT, 9), anchor="w")
         self.error.pack(fill="x")
         self._paint_priority()
@@ -160,7 +273,7 @@ class Panel:
         style.configure(
             "Taskline.Vertical.TScrollbar", background=theme.SURFACE, troughcolor=theme.BG,
             bordercolor=theme.BG, lightcolor=theme.SURFACE, darkcolor=theme.SURFACE,
-            arrowcolor=theme.MUTED, gripcount=0,
+            arrowcolor=theme.TRACK, gripcount=0,
         )
         style.map("Taskline.Vertical.TScrollbar", background=[("active", theme.HOVER)])
         self.scroll = ttk.Scrollbar(
@@ -191,13 +304,16 @@ class Panel:
 
     def hide(self) -> None:
         self.editing = None
+        self.picker.close()
         self.win.withdraw()
 
     def toggle(self) -> None:
         self.hide() if self.visible else self.show()
 
     def _escape(self, _event=None) -> None:
-        if self.editing:
+        if self.picker.visible:
+            self.picker.close()
+        elif self.editing:
             self.editing = None
             self.refresh()
         else:
@@ -221,16 +337,126 @@ class Panel:
         text = entry.get().strip()
         return "" if text == placeholder and entry.cget("fg") == theme.MUTED else text
 
-    def _cycle_priority(self) -> None:
-        order = [None, *PRIORITIES]
-        self.new_priority = order[(order.index(self.new_priority) + 1) % len(order)]
+    def icon(self, priority: str | None, size: int = 18):
+        """PhotoImage of the priority icon in the theme's color (None for no priority)."""
+        if not priority:
+            return None
+        key = (priority, theme.PRIORITY_COLORS[priority], size)
+        if key not in self.images:
+            from PIL import ImageTk
+
+            self.images[key] = ImageTk.PhotoImage(priority_icons.render(priority, key[1], size), master=self.win)
+        return self.images[key]
+
+    def calendar_image(self, size: int = 18):
+        key = ("calendar", theme.ACCENT, size)
+        if key not in self.images:
+            from PIL import ImageTk
+
+            self.images[key] = ImageTk.PhotoImage(priority_icons.calendar_icon(theme.ACCENT, size), master=self.win)
+        return self.images[key]
+
+    def _set_new_priority(self, priority: str | None) -> None:
+        self.new_priority = priority
         self._paint_priority()
 
     def _paint_priority(self) -> None:
-        p = self.new_priority
-        self.priority_button.configure(
-            text=p or "–", fg=theme.PRIORITY_COLORS.get(p, theme.MUTED),
-        )
+        image = self.icon(self.new_priority, 20)
+        if image is not None:
+            self.priority_button.configure(image=image, text="")
+        else:
+            self.priority_button.configure(image="", text="–", width=3, height=1, pady=8)
+        if image is not None:
+            self.priority_button.configure(width=36, height=36, pady=0)
+
+    def _menu(self) -> tk.Menu:
+        return tk.Menu(self.win, tearoff=False, bg=theme.SURFACE, fg=theme.FG, activebackground=theme.ACCENT,
+                       activeforeground=theme.BG, bd=0, relief="flat")
+
+    def _priority_menu(self, anchor: tk.Widget, current: str | None, on_pick) -> None:
+        """High / Medium / Low with their icons, plus No priority."""
+        self.picker.close()
+        menu = self._menu()
+        for priority, name in zip(("H", "M", "L"), self.texts.priorities, strict=False):
+            menu.add_command(label=f"  {name}", image=self.icon(priority, 16), compound="left",
+                             command=lambda p=priority: on_pick(p),
+                             font=(theme.FONT, 10, "bold" if current == priority else "normal"))
+        menu.add_separator()
+        menu.add_command(label=self.texts.priorities[3], command=lambda: on_pick(None),
+                         font=(theme.FONT, 10, "bold" if not current else "normal"))
+        menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height() + 2)
+
+    def _switch_theme(self, light: bool) -> None:
+        # The switch has finished its animation; rebuilding the UI is next.
+        self.app.post(lambda: self.app.set_theme("light" if light else "dark"))
+
+    # ------------------------------------------------------------ calendar --
+    def _due_focus_in(self, _event=None) -> None:
+        self._clear_placeholder(self.due_entry, self.due_placeholder)
+        self._open_due_picker()
+
+    def _due_focus_out(self, _event=None) -> None:
+        self._show_placeholder(self.due_entry, self.due_placeholder)
+        if not self.picker_edit:
+            self.win.after(150, self._maybe_close_picker)
+
+    def _open_due_picker(self) -> None:
+        if self.picker.visible and not self.picker_edit:
+            return
+        self._open_picker(self.due_entry, self.due_entry, False)
+
+    def _field_date(self, field: tk.Entry, edit: bool):
+        store = self.app.store
+        if edit:
+            return cal.due_in_text(field.get(), store.clock(), store.tz)
+        return cal.quick_date(self._value(field, self.due_placeholder), store.clock(), store.tz)
+
+    def _open_picker(self, field: tk.Entry, anchor: tk.Widget, edit: bool) -> None:
+        self.picker_field, self.picker_edit = field, edit
+        self.picker.open(anchor, self._field_date(field, edit), cal.due_days(self.app.store), self._picked)
+
+    def _picked(self, day) -> None:
+        field = self.picker_field
+        if field is None or not field.winfo_exists():
+            return
+        if self.picker_edit:
+            text = cal.set_due_token(field.get(), day)
+        else:
+            self._clear_placeholder(field, self.due_placeholder)
+            text = day.isoformat() if day else ""
+        field.delete(0, "end")
+        field.insert(0, text)
+        field.focus_set()
+        field.icursor("end")
+
+    def _picker_key(self, event, field: tk.Entry, edit: bool):
+        if not self.picker.visible or self.picker_field is not field or event.keysym in ("Return", "KP_Enter"):
+            return None
+        return "break" if self.picker.handle_key(event.keysym) else None
+
+    def _follow(self, field: tk.Entry, edit: bool) -> None:
+        if self.picker.visible and self.picker_field is field:
+            self.picker.follow(self._field_date(field, edit))
+
+    def _due_return(self, _event=None):
+        if self.picker.visible and self.picker_field is self.due_entry:
+            text = self._value(self.due_entry, self.due_placeholder)
+            parses = self._field_date(self.due_entry, False) is not None
+            if self.picker.handle_key("Return", text, parses):
+                return "break"
+        self._add()
+        return "break"
+
+    def _maybe_close_picker(self) -> None:
+        if not self.picker.visible:
+            return
+        focus = self.win.focus_get()
+        if focus is self.picker_field or self.picker.contains(focus):
+            return
+        x, y = self.win.winfo_pointerxy()
+        if self.picker.contains(self.win.winfo_containing(x, y)):
+            return  # a click on the calendar is in progress
+        self.picker.close()
 
     def show_error(self, message: str) -> None:
         self.error.configure(text=message)
@@ -258,6 +484,8 @@ class Panel:
 
     # -------------------------------------------------------------- render --
     def refresh(self) -> None:
+        if self.picker_edit:
+            self.picker.close()  # the edit field is rebuilt below
         done, total = self.app.store.progress()
         self._draw_pie(done, total)
         self.done_label.configure(text=f"● Done: {done}")
@@ -285,14 +513,14 @@ class Panel:
         c = self.pie
         c.delete("all")
         ratio = done / total if total else 0
-        c.create_oval(4, 4, 196, 196, fill=theme.MUTED, outline="")
+        c.create_oval(4, 4, 176, 176, fill=theme.TRACK, outline="")
         if ratio >= 1:
-            c.create_oval(4, 4, 196, 196, fill=theme.ACCENT, outline="")
+            c.create_oval(4, 4, 176, 176, fill=theme.ACCENT, outline="")
         elif ratio > 0:
-            c.create_arc(4, 4, 196, 196, start=90, extent=-360 * ratio, fill=theme.ACCENT, outline="")
-        hole = 100 * 0.58
-        c.create_oval(100 - hole, 100 - hole, 100 + hole, 100 + hole, fill=theme.BG, outline="")
-        c.create_text(100, 100, text=f"{round(ratio * 100)}%", fill=theme.FG, font=(theme.FONT, 26, "bold"))
+            c.create_arc(4, 4, 176, 176, start=90, extent=-360 * ratio, fill=theme.ACCENT, outline="")
+        hole = 90 * 0.58
+        c.create_oval(90 - hole, 90 - hole, 90 + hole, 90 + hole, fill=theme.BG, outline="")
+        c.create_text(90, 90, text=f"{round(ratio * 100)}%", fill=theme.FG, font=(theme.FONT, 26, "bold"))
 
     def _row(self, task: Task) -> None:
         row = tk.Frame(self.rows, bg=theme.BG)
@@ -301,7 +529,7 @@ class Panel:
         def hover(on: bool) -> None:
             color = theme.HOVER if on else theme.BG
             for w in (row, *row.winfo_children()):
-                if not isinstance(w, tk.Entry):
+                if w.winfo_exists() and not isinstance(w, tk.Entry):
                     w.configure(bg=color)
 
         row.bind("<Enter>", lambda _e: hover(True))
@@ -312,16 +540,25 @@ class Panel:
             lambda: self._toggle(task.uuid),
         )
         check.pack(side="left", padx=(8, 6))
-        marker = tk.Label(
-            row, text="●" if task.priority else " ", bg=theme.BG,
-            fg=theme.PRIORITY_COLORS.get(task.priority, theme.MUTED), font=(theme.SYMBOL_FONT, 9), width=2,
-        )
-        marker.pack(side="left", padx=(0, 4))
+        image = self.icon(task.priority)
+        # Always an image: without one, Tk reads width/height as characters.
+        marker = tk.Label(row, bg=theme.BG, image=image or self.blank_image(), width=20, height=20)
+        if image is not None:
+            Tooltip(marker, lambda: "Priority: " + self.texts.priority_name(task.priority))
+        marker.pack(side="left", padx=(0, 6))
 
         delete = self._icon_button(row, "✕", theme.RED, lambda: self._delete(task.uuid))
         delete.pack(side="right", padx=(8, 8))
         edit = self._icon_button(row, "✎", theme.FG, lambda: self._start_edit(task.uuid))
         edit.pack(side="right", padx=4)
+        if self.editing == task.uuid:
+            # Calendar and priority for the task being edited.
+            cal_button = tk.Label(row, image=self.calendar_image(), bg=theme.BG, cursor="hand2")
+            cal_button.pack(side="right", padx=4)
+            Tooltip(cal_button, lambda: "Due date")
+            prio_button = tk.Label(row, bg=theme.BG, cursor="hand2", image=self.blank_image(), width=20, height=20)
+            prio_button.pack(side="right", padx=4)
+            Tooltip(prio_button, lambda: "Priority")
         due_text = self.app.store.due_label(task)
         if due_text and self.editing != task.uuid:
             state = self.app.store.due_state(task)
@@ -337,7 +574,33 @@ class Panel:
             )
             field.insert(0, self.app.store.edit_text(task))
             field.pack(side="left", fill="x", expand=True, ipady=4)
-            field.bind("<Return>", lambda _e: self._save_edit(task.uuid, field.get()))
+
+            def edit_return(_e=None):
+                if self.picker.visible and self.picker_field is field and self.picker.handle_key("Return"):
+                    return "break"
+                self._save_edit(task.uuid, field.get())
+                return "break"
+
+            def paint_priority(_e=None) -> None:
+                current = cal.priority_in_text(field.get())
+                prio_button.configure(image=self.icon(current) or self.icon_placeholder())
+
+            def set_priority(p) -> None:
+                text = cal.set_priority_token(field.get(), p)
+                field.delete(0, "end")
+                field.insert(0, text)
+                field.focus_set()
+                field.icursor("end")
+                paint_priority()
+
+            field.bind("<Return>", edit_return)
+            field.bind("<KeyPress>", lambda e: self._picker_key(e, field, True), add="+")
+            field.bind("<KeyRelease>", lambda _e: (self._follow(field, True), paint_priority()), add="+")
+            cal_button.bind("<Button-1>", lambda _e: self.picker.close() if self.picker.visible
+                            else self._open_picker(field, cal_button, True))
+            prio_button.bind("<Button-1>", lambda _e: self._priority_menu(
+                prio_button, cal.priority_in_text(field.get()), set_priority))
+            paint_priority()
             field.after(10, lambda: (field.focus_set(), field.select_range(0, "end")))
         else:
             label = tk.Label(
@@ -347,6 +610,21 @@ class Panel:
             )
             label.pack(side="left", fill="x", expand=True, ipady=6)
             label.bind("<Double-Button-1>", lambda _e: self._start_edit(task.uuid))
+
+    def blank_image(self, size: int = 20):
+        key = ("blank", size)
+        if key not in self.images:
+            self.images[key] = tk.PhotoImage(master=self.win, width=size, height=size)
+        return self.images[key]
+
+    def icon_placeholder(self):
+        """The Medium icon in the muted color: "no priority yet" in the edit row."""
+        key = ("placeholder", theme.MUTED)
+        if key not in self.images:
+            from PIL import ImageTk
+
+            self.images[key] = ImageTk.PhotoImage(priority_icons.render("M", theme.MUTED, 18), master=self.win)
+        return self.images[key]
 
     def _icon_button(self, parent: tk.Widget, text: str, color: str, command) -> tk.Label:
         label = tk.Label(parent, text=text, bg=theme.BG, fg=color, font=(theme.SYMBOL_FONT, 13), cursor="hand2")
@@ -398,7 +676,28 @@ class TasklineApp:
         self.root.withdraw()
         self.root.title("Taskline")
         self.icon_photo = self._make_icon_photo()
+        self.theme_var = tk.StringVar(value=self.settings.get("theme", "system"))
+        if self.theme_var.get() not in dict(THEME_CHOICES):
+            self.theme_var.set("system")
+        self.autostart_var = tk.BooleanVar(value=system.autostart_enabled())
+        self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", True) is not False)
+        self._drag_origin: tuple[int, int, int, int] | None = None
+        self._dragged = False
 
+        self._build_ui()
+        self.refresh()
+        self._place_bar()
+        if with_tray:
+            self._start_tray()
+            self._show_update_notice()
+            self.root.after(UPDATE_DELAY_MS, self.check_for_updates)
+        if store.read_only:
+            self.root.after(500, self._warn_read_only)
+        self.root.after(POLL_MS, self._poll)
+        self.root.after(REFRESH_MS, self._tick)
+
+    def _build_ui(self) -> None:
+        """Bar, menu and panel, in the current theme (rebuilt when it changes)."""
         # ---- the bar: a borderless, always-on-top strip
         self.bar = tk.Toplevel(self.root)
         self.bar.overrideredirect(True)
@@ -413,11 +712,7 @@ class TasklineApp:
         self.bar_label.bind("<B1-Motion>", self._drag)
         self.bar_label.bind("<ButtonRelease-1>", self._release)
         self.bar_label.bind("<Button-3>", self._context_menu)
-        self._drag_origin: tuple[int, int, int, int] | None = None
-        self._dragged = False
 
-        self.autostart_var = tk.BooleanVar(value=system.autostart_enabled())
-        self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", True) is not False)
         self.menu = tk.Menu(self.root, tearoff=False, bg=theme.SURFACE, fg=theme.FG,
                             activebackground=theme.ACCENT, activeforeground=theme.BG)
         self.menu.add_command(label="Open tasks", command=self.toggle_panel)
@@ -427,6 +722,12 @@ class TasklineApp:
         self.menu.add_command(label="Import Taskwarrior JSON…", command=self.import_json)
         self.menu.add_command(label="Export Taskwarrior JSON…", command=self.export_json)
         self.menu.add_command(label="Reset bar position", command=self.reset_position)
+        theme_menu = tk.Menu(self.menu, tearoff=False, bg=theme.SURFACE, fg=theme.FG,
+                             activebackground=theme.ACCENT, activeforeground=theme.BG)
+        for value, label in THEME_CHOICES:
+            theme_menu.add_radiobutton(label=label, value=value, variable=self.theme_var,
+                                       command=lambda v=value: self.set_theme(v))
+        self.menu.add_cascade(label="Theme", menu=theme_menu)
         self.menu.add_separator()
         self.menu.add_checkbutton(label="Update automatically", variable=self.auto_update_var,
                                   command=self._auto_update_changed)
@@ -436,16 +737,28 @@ class TasklineApp:
         self.menu.add_command(label="Quit", command=self.quit)
 
         self.panel = Panel(self)
+
+    def set_theme(self, choice: str) -> None:
+        """Light, Dark or System (follows Windows' app theme); saved in settings.json."""
+        choice = choice if choice in dict(THEME_CHOICES) else "system"
+        self.theme_var.set(choice)
+        self.settings["theme"] = choice
+        system.save_settings(self.settings)
+        theme.apply(theme.resolve_mode(self.settings))
+        visible = self.panel.visible
+        geometry = self.panel.win.geometry()
+        self.panel.picker.destroy()
+        self.panel.win.destroy()
+        self.menu.destroy()
+        self.bar.destroy()
+        self._build_ui()
         self.refresh()
         self._place_bar()
-        if with_tray:
-            self._start_tray()
-            self._show_update_notice()
-            self.root.after(UPDATE_DELAY_MS, self.check_for_updates)
-        if store.read_only:
-            self.root.after(500, self._warn_read_only)
-        self.root.after(POLL_MS, self._poll)
-        self.root.after(REFRESH_MS, self._tick)
+        if visible:
+            self.panel.win.geometry(geometry)
+            self.panel.show()
+        if self.tray:
+            self.tray.update_menu()
 
     # -------------------------------------------------------------- helpers --
     def _make_icon_photo(self):
@@ -667,6 +980,15 @@ class TasklineApp:
             pass
         self.root.after(POLL_MS, self._poll)
 
+    def process_events(self) -> None:
+        """Run every action posted so far (the poll timer does this every POLL_MS)."""
+        while True:
+            try:
+                action = self.events.get_nowait()
+            except queue.Empty:
+                return
+            action()
+
     def post(self, action) -> None:
         """Run `action` on the Tk thread (used by the tray thread)."""
         self.events.put(action)
@@ -763,6 +1085,7 @@ def selftest(out: Path, screenshots: Path | None) -> int:
             import os
 
             os.environ["TASKLINE_DATA_DIR"] = tmp
+            theme.apply("dark")
             store = _demo_store(Path(tmp))
             app = TasklineApp(store, with_tray=False)
             from .tray import Tray  # noqa: F401  # the tray backend must be bundled
@@ -776,7 +1099,8 @@ def selftest(out: Path, screenshots: Path | None) -> int:
             app.panel.entry.insert(0, "Added by selftest")
             app.panel._clear_placeholder(app.panel.due_entry, app.panel.due_placeholder)
             app.panel.due_entry.insert(0, "+2d")
-            app.panel._cycle_priority()  # H
+            app.panel._set_new_priority("H")
+            assert app.panel.priority_button.cget("image"), "the priority button shows the icon"
             app.panel._add()
             app.root.update()
             assert store.progress() == (1, 6), store.progress()
@@ -793,6 +1117,8 @@ def selftest(out: Path, screenshots: Path | None) -> int:
             assert order[:2] == ["Send the invoice", "Added by selftest"], order
             app.toggle_sort()
             lines.append("due/priority/sort: OK")
+            lines += _selftest_calendar(app, store)
+            lines += _selftest_theme(app)
             lines += _selftest_updater(Path(tmp))
             if screenshots:
                 _screenshots(app, screenshots)
@@ -806,6 +1132,85 @@ def selftest(out: Path, screenshots: Path | None) -> int:
         code = 1
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return code
+
+
+class _Key:
+    def __init__(self, keysym: str) -> None:
+        self.keysym = keysym
+
+
+def _selftest_calendar(app: TasklineApp, store: TaskStore) -> list[str]:
+    """Open the date picker from the due field, drive it with keys, add a task."""
+    panel = app.panel
+    panel._clear_placeholder()
+    panel.entry.delete(0, "end")
+    panel.entry.insert(0, "Picked in the calendar")
+    panel._open_picker(panel.due_entry, panel.due_entry, False)
+    app.root.update()
+    assert panel.picker.visible, "calendar did not open"
+    today = date.today()
+    assert panel.picker.cursor == today
+    assert panel._picker_key(_Key("Right"), panel.due_entry, False) == "break"
+    assert panel._picker_key(_Key("Down"), panel.due_entry, False) == "break"
+    assert panel.picker.cursor == today + timedelta(days=8)
+    assert panel._due_return() == "break" and not panel.picker.visible
+    assert panel.due_entry.get() == (today + timedelta(days=8)).isoformat()
+    panel._set_new_priority("M")
+    panel._add()
+    app.root.update()
+    added = next(t for t in store.all() if t.description == "Picked in the calendar")
+    assert store._local_date(added.due) == today + timedelta(days=8) and added.priority == "M", added.data
+    # Typed shortcuts still work and move the cursor.
+    panel._clear_placeholder(panel.due_entry, panel.due_placeholder)
+    panel._open_picker(panel.due_entry, panel.due_entry, False)
+    panel.due_entry.insert(0, "+3d")
+    panel._follow(panel.due_entry, False)
+    assert panel.picker.cursor == today + timedelta(days=3)
+    panel.picker.close()
+    panel.due_entry.delete(0, "end")
+    store.delete(added.uuid)
+    app.refresh()
+    return ["calendar: keyboard pick, typed shortcut and priority icon OK"]
+
+
+def _selftest_theme(app: TasklineApp) -> list[str]:
+    """Flip the switch to light and back: the whole UI is rebuilt in the new palette."""
+    app.set_theme("light")
+    app.root.update()
+    assert theme.MODE == "light" and app.panel.win.cget("bg") == theme.LIGHT["BG"]
+    assert system.load_settings()["theme"] == "light"
+    app.panel.theme_switch.light = False
+    app.panel.theme_switch._slide(0)  # the switch's own toggle path, without the animation
+    app.process_events()  # run what the switch posted, instead of waiting for the poll timer
+    app.root.update()
+    assert theme.MODE == "dark" and system.load_settings()["theme"] == "dark", theme.MODE
+    return ["theme: light/dark switch rebuilds the UI and is saved"]
+
+
+def _grab(widget_windows, path: Path) -> None:
+    from PIL import ImageGrab
+
+    boxes = [(w.winfo_rootx(), w.winfo_rooty(), w.winfo_rootx() + w.winfo_width(), w.winfo_rooty() + w.winfo_height())
+             for w in widget_windows]
+    ImageGrab.grab((min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes),
+                    max(b[3] for b in boxes))).save(path)
+
+
+def _settle(app: TasklineApp) -> None:
+    for _ in range(10):
+        app.root.update()
+        app.root.after(50)
+
+
+def _panel_with_calendar(app: TasklineApp, directory: Path, name: str) -> None:
+    app.panel.win.geometry("760x520+40+120")
+    app.panel.show()
+    _settle(app)
+    panel = app.panel
+    panel._open_picker(panel.due_entry, panel.due_entry, False)
+    _settle(app)
+    _grab([panel.win, panel.picker.win], directory / name)
+    panel.picker.close()
 
 
 def _screenshots(app: TasklineApp, directory: Path) -> None:
@@ -829,6 +1234,10 @@ def _screenshots(app: TasklineApp, directory: Path) -> None:
     win = app.panel.win
     ImageGrab.grab((win.winfo_rootx(), win.winfo_rooty(), win.winfo_rootx() + win.winfo_width(),
                     win.winfo_rooty() + win.winfo_height())).save(directory / "windows-panel.png")
+    _panel_with_calendar(app, directory, "windows-panel-dark.png")
+    app.set_theme("light")
+    _panel_with_calendar(app, directory, "windows-panel-light.png")
+    app.set_theme("dark")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -841,6 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     system.enable_dpi_awareness()
+    theme.apply(theme.resolve_mode(system.load_settings()))
     if args.selftest:
         return selftest(args.selftest, args.screenshots)
     if not system.acquire_single_instance():

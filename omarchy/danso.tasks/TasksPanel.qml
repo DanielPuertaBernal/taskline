@@ -9,7 +9,9 @@ import "logic.js" as Logic
 // Centered task manager, sized like Omarchy's floating terminal (875x600):
 // a pie of today's done vs pending tasks beside the full list, where each
 // task can be completed, edited or deleted, plus fields to add new ones with
-// a due date and a priority. The list sorts by due date or priority; the
+// a due date and a priority. Focusing or clicking the date field (or the
+// calendar button while editing) opens a month calendar (DatePicker.qml);
+// typed shortcuts keep working. The list sorts by due date or priority; the
 // choice is saved in ~/.local/state/taskline/omarchy-sort.
 // Once the service loads (and every few hours after) it starts the
 // taskline-update script detached; the script itself checks at most once a
@@ -28,12 +30,47 @@ Item {
   property string sortMode: "due"
   property string newPriority: ""
   property var now: new Date()
+  // Field the calendar writes to, and whether it is a row's edit field
+  // (then it rewrites the due: word instead of replacing the text).
+  property var pickerField: null
+  property bool pickerEdit: false
+
+  onEditingUuidChanged: {
+    if (root.pickerEdit) datePicker.visible = false
+    if (root.priorityField) priorityPicker.visible = false
+  }
 
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/taskline"
   // The shell loads plugins through a qs:/// URL; strip any scheme to get the path.
   readonly property string updater: Qt.resolvedUrl("taskline-update").toString().replace(/^[a-z]+:\/\//, "")
-  readonly property var dueColors: ({ overdue: "#f7768e", today: "#ff9e64", upcoming: "#7dcfff" })
-  readonly property var priorityColors: ({ H: "#f7768e", M: "#e0af68", L: "#9ece6a" })
+  // Theme: "system" uses the Omarchy theme's own colors; "light" / "dark"
+  // force Tokyo Night Day / Tokyo Night. Saved as theme= in
+  // ~/.config/taskline/omarchy.conf (the file that also holds auto_update).
+  property string themeMode: "system"
+  readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/taskline"
+  readonly property bool systemLight: Logic.isLight(Commons.Color.background.r, Commons.Color.background.g,
+                                                    Commons.Color.background.b)
+  readonly property bool lightTheme: themeMode === "system" ? systemLight : themeMode === "light"
+  readonly property var ui: themeMode === "system" ? ({
+    bg: Commons.Color.background, surface: Commons.Color.popups.background,
+    border: Qt.alpha(Commons.Color.popups.border, 0.6), hover: Qt.alpha(Commons.Color.accent, 0.12),
+    fg: Commons.Color.popups.text, muted: Commons.Color.muted, track: Commons.Color.muted,
+    accent: Commons.Color.accent, red: Commons.Color.urgent
+  }) : Logic.themePalette(themeMode)
+  // Status colors (due, priority, calendar dots), Day variants on light themes.
+  readonly property var colors: Logic.palette(lightTheme)
+  readonly property var priorityOptions: Logic.PRIORITY_OPTIONS.map(o => ({
+    value: o.value, label: o.label, iconUrl: Logic.priorityIconUrl(o.value, root.colors.priority[o.value] || "")
+  }))
+
+  // Hover hints (Tip.qml): shown after a delay, above the control, never
+  // while a popover is open.
+  property var tipAnchor: null
+  property string tipText: ""
+  readonly property var dueColors: colors.due
+  readonly property var priorityColors: colors.priority
+  // Field the priority popover writes to when editing (null: the add row).
+  property var priorityField: null
 
   readonly property int done: tasks.filter(t => t.status === "completed").length
   readonly property int pending: tasks.length - done
@@ -62,9 +99,68 @@ Item {
     saveSortProc.running = true
   }
 
-  function cyclePriority() {
-    const order = ["", "H", "M", "L"]
-    root.newPriority = order[(order.indexOf(root.newPriority) + 1) % order.length]
+  function setTheme(mode) {
+    root.themeMode = mode === "light" || mode === "dark" ? mode : "system"
+    saveThemeProc.command = ["sh", "-c",
+      'mkdir -p "$1" && f="$1/omarchy.conf" && touch "$f" && { grep -v "^[[:space:]]*theme[[:space:]]*=" "$f"; echo "theme=$2"; } > "$f.tmp" && mv "$f.tmp" "$f"',
+      "sh", root.configDir, root.themeMode]
+    saveThemeProc.running = true
+  }
+
+  function showTip(anchor, text) {
+    root.tipAnchor = anchor
+    root.tipText = text
+    tipTimer.restart()
+  }
+
+  function hideTip(anchor) {
+    if (anchor && root.tipAnchor !== anchor) return
+    tipTimer.stop()
+    tip.visible = false
+    root.tipAnchor = null
+  }
+
+  function placeTip() {
+    const a = root.tipAnchor
+    if (!a || !a.visible || datePicker.visible || priorityPicker.visible) return
+    tip.text = root.tipText
+    const p = a.mapToItem(surface, 0, 0)
+    tip.x = Math.max(8, Math.min(p.x + a.width / 2 - tip.width / 2, surface.width - tip.width - 8))
+    tip.y = p.y - tip.height - 6 >= 4 ? p.y - tip.height - 6 : p.y + a.height + 6
+    tip.visible = true
+  }
+
+  // Place a popover under `anchor`, or above it when there is no room.
+  function placePopover(popover, anchor) {
+    const p = anchor.mapToItem(surface, 0, anchor.height + 6)
+    popover.x = Math.max(12, Math.min(p.x + anchor.width - popover.width, surface.width - popover.width - 12))
+    popover.y = p.y + popover.height > surface.height - 12 ? p.y - anchor.height - 12 - popover.height : p.y
+  }
+
+  // Open the priority popover under `anchor`; `field` is a row's edit field or null.
+  function openPriority(anchor, field) {
+    root.hideTip()
+    root.priorityField = field
+    datePicker.visible = false
+    let current = root.newPriority
+    if (field) {
+      const m = String(field.text).match(/(?:^|\s)(?:priority|pri):(\S+)/)
+      current = m ? m[1].toUpperCase() : ""
+    }
+    priorityPicker.openWith(current)
+    placePopover(priorityPicker, anchor)
+  }
+
+  function priorityPicked(p) {
+    const field = root.priorityField
+    if (field) {
+      field.text = Logic.setPriorityToken(field.text, p)
+      field.forceActiveFocus()
+      field.cursorPosition = field.text.length
+    } else {
+      root.newPriority = p
+      input.forceActiveFocus()
+    }
   }
 
   function run(args) {
@@ -105,8 +201,39 @@ Item {
   }
 
   function close() {
+    root.hideTip()
+    datePicker.visible = false
+    priorityPicker.visible = false
     root.shown = false
     root.editingUuid = ""
+  }
+
+  function dueIsoIn(text, isEdit) {
+    let value = text
+    if (isEdit) {
+      const m = String(text).match(/(?:^|\s)due:(\S+)/)
+      value = m ? m[1] : ""
+    }
+    const d = Logic.parseQuickDate(value, new Date())
+    return d ? Logic.isoDay(d) : ""
+  }
+
+  // Open the calendar under `anchor` (above it when there is no room).
+  function openPicker(field, anchor, isEdit) {
+    root.hideTip()
+    root.pickerField = field
+    root.pickerEdit = isEdit
+    priorityPicker.visible = false
+    datePicker.openWith(dueIsoIn(field.text, isEdit))
+    placePopover(datePicker, anchor)
+  }
+
+  function pickerPicked(iso) {
+    const field = root.pickerField
+    if (!field) return
+    field.text = root.pickerEdit ? Logic.setDueToken(field.text, iso) : iso
+    field.forceActiveFocus()
+    if (root.pickerEdit) field.cursorPosition = field.text.length
   }
 
   IpcHandler {
@@ -116,6 +243,14 @@ Item {
     function toggle(): void { if (root.shown) root.close(); else root.open() }
     function show(): void { root.open() }
     function hide(): void { root.close() }
+    // light, dark or system (saved like the panel's own theme switch).
+    function setTheme(mode: string): string { root.setTheme(mode); return root.themeMode }
+    // Open the panel with the calendar of the date field showing.
+    function calendar(): void {
+      root.open()
+      // The window takes focus after it is mapped; focus the date field then.
+      calendarFocusTimer.restart()
+    }
   }
 
   // Hooks are off so this export does not re-trigger the refresh hook.
@@ -144,6 +279,29 @@ Item {
   }
 
   Process { id: saveSortProc }
+
+  Process {
+    id: loadThemeProc
+    running: true
+    command: ["sh", "-c", 'cat "$1/omarchy.conf" 2>/dev/null', "sh", root.configDir]
+    stdout: StdioCollector {
+      onStreamFinished: root.themeMode = Logic.themeFromConf(text)
+    }
+  }
+
+  Process { id: saveThemeProc }
+
+  Timer {
+    id: calendarFocusTimer
+    interval: 200
+    onTriggered: dueInput.forceActiveFocus()
+  }
+
+  Timer {
+    id: tipTimer
+    interval: 450
+    onTriggered: root.placeTip()
+  }
 
   // setsid -f detaches the updater, so reloading the plugins after an update
   // (which destroys this service) does not kill it halfway.
@@ -184,7 +342,7 @@ Item {
     visible: root.shown
     implicitWidth: 875
     implicitHeight: 600
-    color: Commons.Color.background
+    color: root.ui.bg
 
     onVisibleChanged: {
       if (visible) input.forceActiveFocus()
@@ -192,20 +350,24 @@ Item {
     }
 
     Rectangle {
+      id: surface
       anchors.fill: parent
       color: "transparent"
       focus: true
 
       Keys.onEscapePressed: {
-        if (root.editingUuid !== "") root.editingUuid = ""
+        if (priorityPicker.visible) priorityPicker.close()
+        else if (datePicker.visible) datePicker.close()
+        else if (root.editingUuid !== "") root.editingUuid = ""
         else root.close()
       }
 
       Text {
+        id: closeButton
         z: 1
         anchors { top: parent.top; right: parent.right; margins: 16 }
         text: ""
-        color: closeArea.containsMouse ? Commons.Color.urgent : Commons.Color.muted
+        color: closeArea.containsMouse ? root.ui.red : root.ui.muted
         font.pixelSize: Style.font.heading
         MouseArea {
           id: closeArea
@@ -229,7 +391,7 @@ Item {
 
           Text {
             text: "Tareas de hoy"
-            color: Commons.Color.popups.text
+            color: root.ui.fg
             font.family: Style.font.family
             font.pixelSize: Style.font.display
             font.bold: true
@@ -241,9 +403,9 @@ Item {
             height: 220
 
             property real value: root.progress
-            property color doneColor: Commons.Color.accent
-            property color pendingColor: Commons.Color.muted
-            property color holeColor: Commons.Color.background
+            property color doneColor: root.ui.accent
+            property color pendingColor: root.ui.track
+            property color holeColor: root.ui.bg
             onValueChanged: requestPaint()
             onDoneColorChanged: requestPaint()
             onPendingColorChanged: requestPaint()
@@ -269,7 +431,7 @@ Item {
             Text {
               anchors.centerIn: parent
               text: Math.round(root.progress * 100) + "%"
-              color: Commons.Color.popups.text
+              color: root.ui.fg
               font.family: Style.font.family
               font.pixelSize: Style.font.displayLarge
               font.bold: true
@@ -281,13 +443,13 @@ Item {
 
             Text {
               text: "● Hechas: " + root.done
-              color: Commons.Color.accent
+              color: root.ui.accent
               font.family: Style.font.family
               font.pixelSize: Style.font.heading
             }
             Text {
               text: "● Pendientes: " + root.pending
-              color: Commons.Color.muted
+              color: root.ui.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.heading
             }
@@ -297,13 +459,13 @@ Item {
             width: sortLabel.implicitWidth + 24
             height: sortLabel.implicitHeight + 10
             radius: 6
-            color: sortArea.containsMouse ? Qt.alpha(Commons.Color.accent, 0.2) : Qt.alpha(Commons.Color.accent, 0.08)
+            color: sortArea.containsMouse ? Qt.alpha(root.ui.accent, 0.2) : Qt.alpha(root.ui.accent, 0.08)
 
             Text {
               id: sortLabel
               anchors.centerIn: parent
               text: "⇅  Orden: " + (root.sortMode === "priority" ? "prioridad" : "fecha")
-              color: Commons.Color.popups.text
+              color: root.ui.fg
               font.family: Style.font.family
               font.pixelSize: Style.font.title
             }
@@ -316,11 +478,22 @@ Item {
             }
           }
 
+          // Tema: Claro / Oscuro switch, plus "Auto" to follow the Omarchy theme.
+          ThemeSwitch {
+            ui: root.ui
+            mode: root.themeMode
+            effectiveLight: root.lightTheme
+            onChosen: function(mode) { root.setTheme(mode) }
+          }
+
           Text {
             width: parent.width
+            topPadding: 6
             wrapMode: Text.WordWrap
-            text: "Enter guarda · Esc cierra\nFecha: hoy, mañana, +3d, 2026-12-01\nproject:X  due:friday  priority:H"
-            color: Commons.Color.muted
+            lineHeight: 1.25
+            text: "Enter guarda · Esc cierra\nFecha: calendario o hoy, +3d,\n2026-12-01 · due:friday\npriority:H · project:X"
+            color: root.ui.muted
+            opacity: 0.85
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -344,6 +517,9 @@ Item {
 
             TextField {
               id: input
+              foreground: root.ui.fg
+              accent: root.ui.accent
+              placeholderTextColor: root.ui.muted
               width: parent.width - dueInput.width - priorityButton.width - 2 * parent.spacing
               font.pixelSize: Style.font.title
               placeholderText: "Nueva tarea y Enter…"
@@ -352,10 +528,22 @@ Item {
 
             TextField {
               id: dueInput
+              foreground: root.ui.fg
+              accent: root.ui.accent
+              placeholderTextColor: root.ui.muted
               width: 150
               font.pixelSize: Style.font.title
-              placeholderText: "fecha: hoy, +3d"
+              placeholderText: "\uf073  fecha"
               onAccepted: inputRow.submit()
+              onActiveFocusChanged: {
+                if (activeFocus) root.openPicker(dueInput, dueInput, false)
+                else if (!root.pickerEdit) datePicker.visible = false
+              }
+              onPressed: if (!datePicker.visible) root.openPicker(dueInput, dueInput, false)
+              onTextChanged: if (datePicker.visible && !root.pickerEdit) datePicker.followText(text)
+              Keys.onPressed: function(event) {
+                if (!root.pickerEdit && datePicker.handleKey(event, text)) event.accepted = true
+              }
             }
 
             Rectangle {
@@ -363,22 +551,35 @@ Item {
               width: 44
               height: input.height
               radius: 6
-              color: Qt.alpha(Commons.Color.accent, priorityArea.containsMouse ? 0.2 : 0.08)
+              color: Qt.alpha(root.ui.accent, priorityArea.containsMouse ? 0.2 : 0.08)
 
               Text {
                 anchors.centerIn: parent
-                text: root.newPriority === "" ? "–" : root.newPriority
-                color: root.priorityColors[root.newPriority] || Commons.Color.muted
+                visible: root.newPriority === ""
+                text: "–"
+                color: root.ui.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.title
                 font.bold: true
+              }
+              Image {
+                anchors.centerIn: parent
+                visible: root.newPriority !== ""
+                width: 22
+                height: 22
+                sourceSize: Qt.size(44, 44)
+                source: Logic.priorityIconUrl(root.newPriority, root.priorityColors[root.newPriority] || "")
               }
               MouseArea {
                 id: priorityArea
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.cyclePriority()
+                onClicked: priorityPicker.visible && !root.priorityField
+                  ? priorityPicker.close() : root.openPriority(priorityButton, null)
+                onContainsMouseChanged: containsMouse
+                  ? root.showTip(priorityButton, "Prioridad: " + (Logic.priorityName(root.newPriority) || "sin prioridad").toLowerCase())
+                  : root.hideTip(priorityButton)
               }
             }
           }
@@ -401,7 +602,7 @@ Item {
               width: ListView.view.width
               height: 40
               radius: 8
-              color: hover.hovered ? Qt.alpha(Commons.Color.accent, 0.12) : "transparent"
+              color: hover.hovered ? Qt.alpha(root.ui.accent, 0.12) : "transparent"
 
               HoverHandler { id: hover }
 
@@ -410,7 +611,7 @@ Item {
                 id: check
                 anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
                 text: row.isDone ? "" : ""
-                color: row.isDone ? Commons.Color.accent : Commons.Color.popups.text
+                color: row.isDone ? root.ui.accent : root.ui.fg
                 font.pixelSize: Style.font.heading
                 MouseArea {
                   anchors.fill: parent
@@ -420,14 +621,19 @@ Item {
                 }
               }
 
-              // Priority marker: H red, M yellow, L green.
-              Rectangle {
+              // Priority icon (Lucide): Alta red chevrons, Media yellow, Baja green.
+              Image {
                 id: marker
                 anchors { left: check.right; leftMargin: 8; verticalCenter: parent.verticalCenter }
-                width: 4
+                width: 20
                 height: 20
-                radius: 2
-                color: root.priorityColors[row.modelData.priority] || "transparent"
+                sourceSize: Qt.size(40, 40)
+                source: Logic.priorityIconUrl(row.modelData.priority, root.priorityColors[row.modelData.priority] || "")
+                HoverHandler {
+                  onHoveredChanged: hovered && marker.source != ""
+                    ? root.showTip(marker, "Prioridad " + Logic.priorityName(row.modelData.priority).toLowerCase())
+                    : root.hideTip(marker)
+                }
               }
 
               Text {
@@ -435,7 +641,7 @@ Item {
                 visible: !row.editing && text !== ""
                 anchors { right: actions.left; rightMargin: 16; verticalCenter: parent.verticalCenter }
                 text: Logic.dueLabel(row.modelData, root.now)
-                color: root.dueColors[Logic.dueState(row.modelData, root.now)] || Commons.Color.muted
+                color: root.dueColors[Logic.dueState(row.modelData, root.now)] || root.ui.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.title
               }
@@ -450,7 +656,7 @@ Item {
                 elide: Text.ElideRight
                 text: row.modelData.description
                   + (row.modelData.project ? "   · " + row.modelData.project : "")
-                color: row.isDone ? Commons.Color.muted : Commons.Color.popups.text
+                color: row.isDone ? root.ui.muted : root.ui.fg
                 font.strikeout: row.isDone
                 font.family: Style.font.family
                 font.pixelSize: Style.font.title
@@ -458,6 +664,9 @@ Item {
 
               TextField {
                 id: editField
+                foreground: root.ui.fg
+                accent: root.ui.accent
+                placeholderTextColor: root.ui.muted
                 visible: row.editing
                 anchors {
                   left: check.right; leftMargin: 8
@@ -467,6 +676,15 @@ Item {
                 font.pixelSize: Style.font.title
                 onVisibleChanged: if (visible) { text = Logic.editText(row.modelData); forceActiveFocus(); selectAll() }
                 onAccepted: root.saveEdit(row.modelData, text)
+                onTextChanged: {
+                  if (!datePicker.visible || root.pickerField !== editField) return
+                  const m = text.match(/(?:^|\s)due:(\S+)/)
+                  if (m) datePicker.followText(m[1])
+                }
+                Keys.onPressed: function(event) {
+                  if (root.pickerEdit && root.pickerField === editField && datePicker.handleKey(event, ""))
+                    event.accepted = true
+                }
               }
 
               Row {
@@ -475,9 +693,58 @@ Item {
                 spacing: 16
                 opacity: hover.hovered || row.editing ? 1 : 0.35
 
+                // Priority for the task, while editing.
+                Item {
+                  id: editPriorityButton
+                  visible: row.editing
+                  width: 22
+                  height: 22
+                  anchors.verticalCenter: parent.verticalCenter
+                  Image {
+                    anchors.fill: parent
+                    sourceSize: Qt.size(44, 44)
+                    readonly property string current: (String(editField.text).match(/(?:^|\s)(?:priority|pri):(\S+)/) || ["", ""])[1].toUpperCase()
+                    source: current ? Logic.priorityIconUrl(current, root.priorityColors[current] || "")
+                                    : Logic.priorityIconUrl("M", root.ui.muted)
+                    opacity: current ? 1 : 0.5
+                  }
+                  MouseArea {
+                    id: editPriorityArea
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: priorityPicker.visible && root.priorityField === editField
+                      ? priorityPicker.close() : root.openPriority(editPriorityButton, editField)
+                    onContainsMouseChanged: containsMouse ? root.showTip(editPriorityButton, "Prioridad")
+                                                          : root.hideTip(editPriorityButton)
+                  }
+                }
+
+                // Calendar for the task's due date, while editing.
+                Text {
+                  id: calendarButton
+                  visible: row.editing
+                  text: "\uf073"
+                  color: root.ui.accent
+                  font.pixelSize: Style.font.heading
+                  MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onContainsMouseChanged: containsMouse ? root.showTip(calendarButton, "Fecha")
+                                                          : root.hideTip(calendarButton)
+                    onClicked: {
+                      if (datePicker.visible && root.pickerField === editField) datePicker.close()
+                      else root.openPicker(editField, calendarButton, true)
+                    }
+                  }
+                }
+
                 Text {
                   text: ""
-                  color: Commons.Color.popups.text
+                  color: root.ui.fg
                   font.pixelSize: Style.font.heading
                   MouseArea {
                     anchors.fill: parent
@@ -488,7 +755,7 @@ Item {
                 }
                 Text {
                   text: ""
-                  color: Commons.Color.urgent
+                  color: root.ui.red
                   font.pixelSize: Style.font.heading
                   MouseArea {
                     anchors.fill: parent
@@ -504,12 +771,44 @@ Item {
               anchors.centerIn: parent
               visible: root.tasks.length === 0
               text: "Sin tareas. Agrega la primera arriba."
-              color: Commons.Color.muted
+              color: root.ui.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.title
             }
           }
         }
+      }
+
+      // A click outside an open popover closes it.
+      MouseArea {
+        anchors.fill: parent
+        z: 19
+        enabled: datePicker.visible || priorityPicker.visible
+        onClicked: { datePicker.close(); priorityPicker.close() }
+      }
+
+      OptionMenu {
+        id: priorityPicker
+        z: 20
+        ui: root.ui
+        options: root.priorityOptions
+        onPicked: function(p) { root.priorityPicked(p) }
+      }
+
+      Tip {
+        id: tip
+        z: 30
+        ui: root.ui
+      }
+
+      DatePicker {
+        id: datePicker
+        z: 20
+        dueDays: Logic.dueDays(root.tasks)
+        dotColor: root.colors.dot
+        ui: root.ui
+        onPicked: function(iso) { root.pickerPicked(iso) }
+        onDismissed: if (root.pickerField) root.pickerField.forceActiveFocus()
       }
     }
   }

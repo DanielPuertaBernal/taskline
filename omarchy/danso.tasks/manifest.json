@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "danso.tasks",
   "name": "Task progress",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Daniel Puerta",
   "description": "Taskwarrior progress bar: tasks completed today against everything still open",
   "kinds": ["service", "bar-widget"],
