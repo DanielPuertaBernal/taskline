@@ -1,11 +1,5 @@
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
-.ruff_cache/
 build/
 dist/
-*.spec
 .atl/
 
 # Rust

@@ -1,0 +1,22 @@
+[package]
+name = "taskline-assets"
+description = "Renders the repository's generated images (assets/social-preview.png)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "social-preview"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "canvas", "image-without-codecs", "smol"] }
+iced_test = "0.14"
+png = "0.17"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "0.14", default-features = false, features = ["wayland", "x11"] }

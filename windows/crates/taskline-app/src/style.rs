@@ -73,20 +73,34 @@ pub fn background(p: &'static Palette) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-/// A popover surface (calendar, priority menu): background, border, rounded, shadow.
+/// A popover surface (calendar, priority menu): opaque background and a border.
+///
+/// No blurred shadow: iced's software renderer draws shadows outside the damage clip,
+/// so every partial repaint (hovering a day) stacked another shadow on top until the
+/// calendar turned black (v2.0.0 on Windows). `popover_ring` adds a soft outline
+/// instead, drawn as an ordinary clipped border.
 pub fn popover(p: &'static Palette) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(Background::Color(to_iced(p.bg))),
         border: Border::default().rounded(10).color(to_iced(p.border)).width(1),
-        shadow: Shadow {
-            color: Color {
-                a: 0.35,
-                ..Color::BLACK
-            },
-            offset: iced::Vector::new(0.0, 6.0),
-            blur_radius: 18.0,
-        },
+        shadow: Shadow::default(),
         text_color: Some(to_iced(p.fg)),
+        ..Default::default()
+    }
+}
+
+/// The outline around a popover: a translucent ring, safe on every renderer.
+pub fn popover_ring(_p: &'static Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: None,
+        border: Border::default()
+            .rounded(13)
+            .color(Color {
+                a: 0.16,
+                ..Color::BLACK
+            })
+            .width(3),
+        shadow: Shadow::default(),
         ..Default::default()
     }
 }

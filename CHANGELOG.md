@@ -2,6 +2,17 @@
 
 All notable changes to Taskline. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-11-26
+
+### Fixed
+- Windows: the calendar popover turned black and only repainted the days under the pointer. iced's software renderer draws box shadows outside the region it repaints, so every hover stacked another shadow over the calendar. Popovers now have no blurred shadow; a translucent outline drawn as a normal border replaces it. The CI selftest now moves the real pointer over the open calendar and checks what the screen shows, in both themes.
+- Windows: any click in the panel could open the calendar. Popovers (calendar and priority menu) now open only from their own control: a click on the date field (or Alt+Down, or Enter on an empty add row) and the priority button. A second click on the same control closes it; a click anywhere else closes it without pressing what is underneath, unless it lands on the other control, which opens its own popover. Esc and leaving the window close it. Only one is open at a time. CI clicks through these rules with the real mouse.
+- Omarchy: the same rules in the panel; the calendar no longer opens just because the date field got focus.
+
+### Changed
+- Windows: a day picked in the calendar shows in the date field like the Omarchy badges (`jue 26 nov`, `Thu Nov 26`); tasks still store ISO / Taskwarrior dates, and typed shortcuts (`+3d`, `2026-12-01`) still work.
+- No Python is left in the repository: `assets/social-preview.png` is rendered by a small Rust tool (`cargo run -p taskline-assets --bin social-preview`) and the upgrade test serves its fake release with PowerShell.
+
 ## [2.0.0] - 2026-11-26
 
 ### Changed
@@ -66,6 +77,7 @@ All notable changes to Taskline. The format follows [Keep a Changelog](https://k
 - Windows app: always-on-top bar, task panel, tray icon, Start with Windows, Taskwarrior JSON import/export.
 - CI and a release workflow that publishes `taskline.exe`, `taskline-omarchy.tar.gz`, `install.sh` and `SHA256SUMS.txt`.
 
+[2.0.1]: https://github.com/DanielPuertaBernal/taskline/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/DanielPuertaBernal/taskline/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/DanielPuertaBernal/taskline/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/DanielPuertaBernal/taskline/compare/v1.0.0...v1.1.0

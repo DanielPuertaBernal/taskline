@@ -64,6 +64,13 @@ pub enum Step {
     Calendar,
     Shot(&'static str),
     Saved(&'static str, Screenshot),
+    Locate(Mode),
+    LocateClicks,
+    Click(isize, usize),
+    Press(isize, usize),
+    ClickCheck(isize, usize),
+    Hover(Mode, isize, u8),
+    Grabbed(Mode, isize),
     Finish,
 }
 
@@ -117,7 +124,7 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
         Step::Start => {
             let open = app.update(Message::TogglePanel);
             logic(app);
-            Task::batch([open, after(Duration::from_millis(1500), Step::Calendar)])
+            Task::batch([open, after(Duration::from_millis(1500), Step::LocateClicks)])
         }
         Step::Calendar => {
             app.hovered = None;
@@ -164,18 +171,101 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
                 ),
             }
             match name {
-                "windows-panel-dark.png" => {
+                "windows-panel-dark.png" => Task::done(Message::Selftest(Step::Locate(Mode::Dark))),
+                "windows-panel-light.png" => Task::done(Message::Selftest(Step::Locate(Mode::Light))),
+                _ => Task::done(Message::Selftest(Step::Finish)),
+            }
+        }
+        Step::LocateClicks => match app.panel {
+            Some(id) => {
+                window::run(id, |w| crate::raw_hwnd(w)).map(|hwnd| Message::Selftest(Step::Click(hwnd, 0)))
+            }
+            None => Task::done(Message::Selftest(Step::Calendar)),
+        },
+        Step::Click(hwnd, i) => {
+            let Some((left, top, scale)) = platform::window_origin(hwnd).filter(|_| i < CLICKS.len()) else {
+                if i == 0 {
+                    line(app, "clicks: real mouse input unavailable on this system");
+                } else {
+                    line(
+                        app,
+                        format!(
+                            "clicks: {} real clicks checked against the popover rules",
+                            CLICKS.len()
+                        ),
+                    );
+                }
+                return Task::done(Message::Selftest(Step::Calendar));
+            };
+            if i == 0 {
+                app.selftest_progress = app.store.progress();
+            }
+            let (target, _, _) = CLICKS[i];
+            let point = click_point(app, target);
+            platform::move_cursor(left + (point.x * scale) as i32, top + (point.y * scale) as i32);
+            after(Duration::from_millis(250), Step::Press(hwnd, i))
+        }
+        Step::Press(hwnd, i) => {
+            platform::click();
+            after(Duration::from_millis(400), Step::ClickCheck(hwnd, i))
+        }
+        Step::ClickCheck(hwnd, i) => {
+            let (target, expected, why) = CLICKS[i];
+            let got = match app.popover {
+                Popover::None => "none",
+                Popover::Calendar { .. } => "calendar",
+                Popover::Priority { .. } => "priority",
+            };
+            check(
+                app,
+                got == expected,
+                format!("click {i} on {target}: expected {expected}, got {got} ({why})"),
+            );
+            let progress = app.store.progress();
+            let before = app.selftest_progress;
+            check(
+                app,
+                progress == before,
+                format!("click {i} on {target} changed a task ({progress:?})"),
+            );
+            Task::done(Message::Selftest(Step::Click(hwnd, i + 1)))
+        }
+        Step::Locate(mode) => match app.panel {
+            Some(id) => window::run(id, |w| crate::raw_hwnd(w))
+                .map(move |hwnd| Message::Selftest(Step::Hover(mode, hwnd, 0))),
+            None => Task::done(Message::Selftest(Step::Grabbed(mode, 0))),
+        },
+        Step::Hover(mode, hwnd, i) => {
+            // Move the real pointer over the calendar's days: every move repaints only
+            // the damaged cells, which is where v2.0.0 stacked its shadow into black.
+            let Some((left, top, scale)) = platform::window_origin(hwnd) else {
+                return Task::done(Message::Selftest(Step::Grabbed(mode, hwnd)));
+            };
+            let (x, y) = crate::panel::new_calendar_origin(app.panel_size.width);
+            let (column, row) = (f32::from(i % 7), f32::from(i / 7 % 4));
+            let px = x + 12.0 + 19.0 + column * 39.0;
+            let py = y + 70.0 + 17.0 + row * 36.0;
+            platform::move_cursor(left + (px * scale) as i32, top + (py * scale) as i32);
+            if i < 20 {
+                after(Duration::from_millis(120), Step::Hover(mode, hwnd, i + 1))
+            } else {
+                after(Duration::from_millis(600), Step::Grabbed(mode, hwnd))
+            }
+        }
+        Step::Grabbed(mode, hwnd) => {
+            screen_check(app, mode, hwnd);
+            match mode {
+                Mode::Dark => {
                     // The calendar stays open; only the palette changes.
                     let _ = app.update(Message::SetTheme(Choice::Light));
                     app.hovered = None;
                     after(Duration::from_millis(1200), Step::Shot("windows-panel-light.png"))
                 }
-                "windows-panel-light.png" => {
+                Mode::Light => {
                     let _ = app.update(Message::SetTheme(Choice::Dark));
                     let _ = app.update(Message::ClosePopover);
                     after(Duration::from_millis(800), Step::Shot("windows-bar.png"))
                 }
-                _ => Task::done(Message::Selftest(Step::Finish)),
             }
         }
         Step::Finish => {
@@ -183,6 +273,111 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             registry_check(app);
             finish(app)
         }
+    }
+}
+
+/// What the screen shows inside the panel after hovering the calendar: its padding,
+/// header and weekday row must still be the theme's background, not shadow or black.
+fn screen_check(app: &mut App, mode: Mode, hwnd: isize) {
+    let name = match mode {
+        Mode::Dark => "windows-calendar-dark-screen.png",
+        Mode::Light => "windows-calendar-light-screen.png",
+    };
+    let (Some((width, height, rgba)), Some((_, _, scale))) =
+        (platform::capture_window(hwnd), platform::window_origin(hwnd))
+    else {
+        return line(app, format!("{name}: screen capture unavailable on this system"));
+    };
+    let shot = Screenshot::new(rgba, iced::Size::new(width, height), scale);
+    if let Some(dir) = app.selftest.as_ref().and_then(|t| t.screenshots.clone())
+        && let Err(error) = save_png(&dir, name, &shot)
+    {
+        check(app, false, format!("{name}: {error}"));
+    }
+    let bg = mode.palette().bg;
+    let (x, y) = crate::panel::new_calendar_origin(app.panel_size.width);
+    let w = crate::panel::CAL_W;
+    // Padding left of the grid, right of the header, between header and weekdays.
+    let samples = [
+        (x + 5.0, y + 60.0),
+        (x + w - 5.0, y + 30.0),
+        (x + w / 2.0 - 60.0, y + 6.0),
+        (x + 5.0, y + 200.0),
+    ];
+    let mut bad = Vec::new();
+    for (sx, sy) in samples {
+        let (px, py) = ((sx * scale) as u32, (sy * scale) as u32);
+        if px >= width || py >= height {
+            continue;
+        }
+        let at = ((py * width + px) * 4) as usize;
+        let pixel = &shot.rgba[at..at + 3];
+        let off = [bg.0, bg.1, bg.2]
+            .iter()
+            .zip(pixel)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        if off > 12 {
+            bad.push(format!(
+                "({sx:.0},{sy:.0}) = #{:02x}{:02x}{:02x}",
+                pixel[0], pixel[1], pixel[2]
+            ));
+        }
+    }
+    check(
+        app,
+        bad.is_empty(),
+        format!(
+            "{name}: calendar background after hovering is not {} at {}",
+            bg.to_hex(),
+            bad.join(", ")
+        ),
+    );
+    line(
+        app,
+        format!(
+            "screen: {name} {width}x{height}, calendar background intact after hover: {}",
+            bad.is_empty()
+        ),
+    );
+}
+
+/// Real clicks on the panel: (where, popover expected afterwards, rule).
+const CLICKS: [(&str, &str, &str); 11] = [
+    ("date", "calendar", "the date field opens the calendar"),
+    ("list", "none", "a click elsewhere closes it"),
+    ("date", "calendar", "reopens"),
+    ("date", "none", "the date field toggles it closed"),
+    ("priority", "priority", "the priority button opens its menu"),
+    ("date", "calendar", "another trigger opens its own popover"),
+    (
+        "checkbox",
+        "none",
+        "closes without completing the task underneath",
+    ),
+    ("date", "calendar", "reopens"),
+    ("input", "none", "the new-task field only closes it"),
+    ("input", "none", "and never opens the calendar"),
+    ("list", "none", "nor does an empty area"),
+];
+
+fn click_point(app: &App, target: &str) -> iced::Point {
+    use crate::app::Target;
+    use crate::panel::Trigger;
+    let center = |trigger: Trigger| {
+        crate::panel::triggers(app)
+            .into_iter()
+            .find(|(t, _)| *t == trigger)
+            .map(|(_, r)| r.center())
+            .unwrap_or_default()
+    };
+    match target {
+        "date" => center(Trigger::Calendar(Target::New)),
+        "priority" => center(Trigger::Priority(Target::New)),
+        "checkbox" => iced::Point::new(307.0, 91.0),
+        "input" => iced::Point::new(400.0, 42.0),
+        _ => iced::Point::new(520.0, app.panel_size.height - 60.0),
     }
 }
 
@@ -262,11 +457,15 @@ pub(crate) fn logic(app: &mut App) {
         "arrows move the cursor",
     );
     let _ = app.update(Message::DueSubmit);
-    let expected = (today + Days::days(8)).format("%Y-%m-%d").to_string();
+    let picked = today + Days::days(8);
+    let shown = app.texts.short_date(picked, today);
     check(
         app,
-        app.popover == Popover::None && app.due == expected,
-        format!("Enter picks the day ({})", app.due),
+        app.popover == Popover::None && app.due_day == Some(picked) && app.due == shown,
+        format!(
+            "Enter picks the day and the field shows it as `{shown}` ({})",
+            app.due
+        ),
     );
     let _ = app.update(Message::OpenPriority(Target::New));
     let _ = app.update(Message::PickPriority(Some("M")));

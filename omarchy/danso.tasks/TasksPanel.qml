@@ -107,6 +107,30 @@ Item {
     saveThemeProc.running = true
   }
 
+  // Which add-row trigger is under a point of the panel: "date", "priority" or "".
+  function triggerAt(x, y) {
+    const hit = item => {
+      const p = item.mapToItem(surface, 0, 0)
+      return x >= p.x && x <= p.x + item.width && y >= p.y && y <= p.y + item.height
+    }
+    return hit(dueInput) ? "date" : hit(priorityButton) ? "priority" : ""
+  }
+
+  // Popover rules: a trigger toggles its own popover, opens it while the other one
+  // closes, and "" (anywhere else) only closes. One popover at a time.
+  function toggleTrigger(which) {
+    const dateOpen = datePicker.visible && !root.pickerEdit
+    const priorityOpen = priorityPicker.visible && !root.priorityField
+    datePicker.visible = false
+    priorityPicker.visible = false
+    if (which === "date" && !dateOpen) {
+      dueInput.forceActiveFocus()
+      root.openPicker(dueInput, dueInput, false)
+    } else if (which === "priority" && !priorityOpen) {
+      root.openPriority(priorityButton, null)
+    }
+  }
+
   function showTip(anchor, text) {
     root.tipAnchor = anchor
     root.tipText = text
@@ -294,7 +318,7 @@ Item {
   Timer {
     id: calendarFocusTimer
     interval: 200
-    onTriggered: dueInput.forceActiveFocus()
+    onTriggered: { dueInput.forceActiveFocus(); root.openPicker(dueInput, dueInput, false) }
   }
 
   Timer {
@@ -535,14 +559,16 @@ Item {
               font.pixelSize: Style.font.title
               placeholderText: "\uf073  fecha"
               onAccepted: inputRow.submit()
-              onActiveFocusChanged: {
-                if (activeFocus) root.openPicker(dueInput, dueInput, false)
-                else if (!root.pickerEdit) datePicker.visible = false
-              }
-              onPressed: if (!datePicker.visible) root.openPicker(dueInput, dueInput, false)
+              // The calendar opens only from a click on this field (or Alt+Down here),
+              // never just because the field got focus.
+              onActiveFocusChanged: if (!activeFocus && !root.pickerEdit) datePicker.visible = false
+              onPressed: root.toggleTrigger("date")
               onTextChanged: if (datePicker.visible && !root.pickerEdit) datePicker.followText(text)
               Keys.onPressed: function(event) {
-                if (!root.pickerEdit && datePicker.handleKey(event, text)) event.accepted = true
+                if (event.key === Qt.Key_Down && (event.modifiers & Qt.AltModifier) && !datePicker.visible) {
+                  root.openPicker(dueInput, dueInput, false)
+                  event.accepted = true
+                } else if (!root.pickerEdit && datePicker.handleKey(event, text)) event.accepted = true
               }
             }
 
@@ -575,8 +601,7 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: priorityPicker.visible && !root.priorityField
-                  ? priorityPicker.close() : root.openPriority(priorityButton, null)
+                onClicked: root.toggleTrigger("priority")
                 onContainsMouseChanged: containsMouse
                   ? root.showTip(priorityButton, "Prioridad: " + (Logic.priorityName(root.newPriority) || "sin prioridad").toLowerCase())
                   : root.hideTip(priorityButton)
@@ -779,12 +804,13 @@ Item {
         }
       }
 
-      // A click outside an open popover closes it.
+      // A click outside an open popover closes it and is not passed on, unless it lands
+      // on the other popover's trigger (date field / priority button), which opens it.
       MouseArea {
         anchors.fill: parent
         z: 19
         enabled: datePicker.visible || priorityPicker.visible
-        onClicked: { datePicker.close(); priorityPicker.close() }
+        onClicked: function(mouse) { root.toggleTrigger(root.triggerAt(mouse.x, mouse.y)) }
       }
 
       OptionMenu {

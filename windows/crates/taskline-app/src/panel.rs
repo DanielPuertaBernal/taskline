@@ -14,7 +14,9 @@ use iced::widget::{
     Space, button, canvas, column, container, mouse_area, opaque, pin, rich_text, row, scrollable, span,
     stack, text, text_input, tooltip,
 };
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Theme};
+use iced::{
+    Alignment, Background, Border, Color, Element, Fill, Length, Padding, Point, Rectangle, Size, Theme,
+};
 use taskline_core::calendar::month_grid;
 use taskline_core::store::Task;
 use taskline_core::theme::{Mode, Palette};
@@ -82,11 +84,16 @@ pub fn view(app: &App, width: f32, height: f32) -> Element<'_, Message> {
             .y(10.0)
             .into(),
     ];
-    if let Some((popover, x, y)) = popover(app, p, &tasks, width, height) {
+    if let Some((popover, x, y)) = popover(app, p, width, height) {
+        // Takes the whole click: closes the popover without pressing what is under it,
+        // unless the click is on another popover's trigger (see App::overlay_pressed).
         layers.push(opaque(
-            mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::ClosePopover),
+            mouse_area(Space::new().width(Fill).height(Fill))
+                .on_move(Message::OverlayMoved)
+                .on_press(Message::OverlayPressed),
         ));
-        layers.push(pin(popover).x(x).y(y).into());
+        let ring = container(popover).padding(3).style(style::popover_ring(p));
+        layers.push(pin(ring).x(x - 3.0).y(y - 3.0).into());
     }
     stack(layers).width(Fill).height(Fill).into()
 }
@@ -272,11 +279,15 @@ fn list<'a>(app: &'a App, p: &'static Palette, tasks: &[Task]) -> Element<'a, Me
         .font(MONO)
         .style(style::field(p))
         .width(Length::Fixed(DUE_W));
+    // The calendar opens only from a click on this field (or Alt+Down / Enter in it).
     let due = stack![
         due,
         pin(icon(&icons::CALENDAR, 15.0, to_iced(p.muted)))
             .x(11.0)
-            .y(10.5)
+            .y(10.5),
+        mouse_area(Space::new().width(DUE_W).height(FIELD_H))
+            .on_press(Message::OpenCalendar(Target::New))
+            .interaction(iced::mouse::Interaction::Pointer),
     ];
 
     let priority_name = app
@@ -502,33 +513,91 @@ fn icons_check() -> iced::widget::svg::Handle {
 // ------------------------------------------------------------------- popovers --
 
 /// The open popover and where it goes: under its anchor, or above when there is no room.
+/// The controls that open a popover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Calendar(Target),
+    Priority(Target),
+}
+
+/// Where each popover trigger is in the panel (logical pixels), for the click-outside
+/// rule and to anchor the popovers. Matches the layout of `list` and `task_row`.
+pub fn triggers(app: &App) -> Vec<(Trigger, Rectangle)> {
+    let right = app.panel_size.width - RIGHT_PAD;
+    let mut found = vec![
+        (
+            Trigger::Calendar(Target::New),
+            Rectangle::new(
+                Point::new(right - PRIORITY_W - 8.0 - DUE_W, PAD),
+                Size::new(DUE_W, FIELD_H),
+            ),
+        ),
+        (
+            Trigger::Priority(Target::New),
+            Rectangle::new(
+                Point::new(right - PRIORITY_W, PAD),
+                Size::new(PRIORITY_W, FIELD_H),
+            ),
+        ),
+    ];
+    if let Some(uuid) = app.editing.as_deref() {
+        let tasks = app.store.today(app.sort);
+        if let Some(index) = tasks.iter().position(|t| t.uuid() == uuid) {
+            let top = LIST_TOP + index as f32 * (ROW_H + ROW_GAP) - app.scroll_y;
+            // Generous boxes around the icons: priority, calendar (then edit, delete).
+            found.push((
+                Trigger::Priority(Target::Edit),
+                Rectangle::new(Point::new(right - 168.0, top), Size::new(32.0, ROW_H)),
+            ));
+            found.push((
+                Trigger::Calendar(Target::Edit),
+                Rectangle::new(Point::new(right - 124.0, top), Size::new(32.0, ROW_H)),
+            ));
+        }
+    }
+    found
+}
+
+pub fn trigger_at(app: &App, point: Point) -> Option<Trigger> {
+    triggers(app)
+        .into_iter()
+        .find(|(_, rect)| rect.contains(point))
+        .map(|(t, _)| t)
+}
+
+/// Where the calendar of the add row opens (the selftest hovers its days).
+pub fn new_calendar_origin(width: f32) -> (f32, f32) {
+    let right = width - RIGHT_PAD - PRIORITY_W - 8.0;
+    (
+        (right - CAL_W).clamp(12.0, (width - CAL_W - 12.0).max(12.0)),
+        PAD + FIELD_H + 6.0,
+    )
+}
+
 fn popover<'a>(
     app: &'a App,
     p: &'static Palette,
-    tasks: &[Task],
     width: f32,
     height: f32,
 ) -> Option<(Element<'a, Message>, f32, f32)> {
-    let right_edge = width - RIGHT_PAD;
-    let edit_row_top = || {
-        let index = tasks
-            .iter()
-            .position(|t| Some(t.uuid()) == app.editing.as_deref())
-            .unwrap_or(0);
-        LIST_TOP + index as f32 * (ROW_H + ROW_GAP) - app.scroll_y
-    };
-    let place = |anchor_right: f32, anchor_top: f32, anchor_h: f32, w: f32, h: f32| {
-        let x = (anchor_right - w).clamp(12.0, (width - w - 12.0).max(12.0));
-        let below = anchor_top + anchor_h + 6.0;
+    let place = |trigger: Trigger, w: f32, h: f32| {
+        let anchor = triggers(app)
+            .into_iter()
+            .find(|(t, _)| *t == trigger)
+            .map(|(_, rect)| rect)
+            .unwrap_or(Rectangle::new(
+                Point::new(width - RIGHT_PAD, PAD),
+                Size::new(0.0, FIELD_H),
+            ));
+        let x = (anchor.x + anchor.width - w).clamp(12.0, (width - w - 12.0).max(12.0));
+        let below = anchor.y + anchor.height + 6.0;
         let y = if below + h > height - 12.0 {
-            (anchor_top - 6.0 - h).max(8.0)
+            (anchor.y - 6.0 - h).max(8.0)
         } else {
             below
         };
         (x, y)
     };
-    // Right edges of the anchors (see `list` and `task_row`).
-    let edit_actions = right_edge - 8.0 - ICON - ACTION_GAP - ICON - ACTION_GAP;
     match &app.popover {
         Popover::None => None,
         Popover::Calendar {
@@ -537,23 +606,11 @@ fn popover<'a>(
             month,
             cursor,
         } => {
-            let (x, y) = match target {
-                Target::New => place(right_edge - PRIORITY_W - 8.0, PAD, FIELD_H, CAL_W, CAL_H),
-                Target::Edit => place(edit_actions, edit_row_top(), ROW_H, CAL_W, CAL_H),
-            };
+            let (x, y) = place(Trigger::Calendar(*target), CAL_W, CAL_H);
             Some((date_picker(app, p, *year, *month, *cursor), x, y))
         }
         Popover::Priority { target } => {
-            let (x, y) = match target {
-                Target::New => place(right_edge, PAD, FIELD_H, MENU_W, MENU_H),
-                Target::Edit => place(
-                    edit_actions - ICON - ACTION_GAP + 8.0,
-                    edit_row_top(),
-                    ROW_H,
-                    MENU_W,
-                    MENU_H,
-                ),
-            };
+            let (x, y) = place(Trigger::Priority(*target), MENU_W, MENU_H);
             let current = match target {
                 Target::New => app.new_priority,
                 Target::Edit => app.edit_priority(),
