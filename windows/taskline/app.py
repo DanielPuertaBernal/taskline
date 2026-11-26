@@ -183,8 +183,8 @@ class Panel:
             summary, text="Today's tasks", bg=theme.BG, fg=theme.FG,
             font=(theme.FONT, 18, "bold"), anchor="w",
         ).pack(fill="x")
-        self.pie = tk.Canvas(summary, width=200, height=200, bg=theme.BG, highlightthickness=0)
-        self.pie.pack(pady=18, anchor="w")
+        self.pie = tk.Canvas(summary, width=180, height=180, bg=theme.BG, highlightthickness=0)
+        self.pie.pack(pady=12, anchor="w")
         self.done_label = tk.Label(summary, bg=theme.BG, fg=theme.ACCENT, font=(theme.FONT, 12), anchor="w")
         self.done_label.pack(fill="x")
         self.pending_label = tk.Label(summary, bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 12), anchor="w")
@@ -212,8 +212,7 @@ class Panel:
         Tooltip(self.auto_chip, lambda: "Follow the Windows app theme")
         tk.Label(
             summary,
-            text="Enter adds · Esc closes\nDue: calendar, or today, +3d,\n2026-12-01 · due:friday\n"
-                 "priority:H · project:Name",
+            text="Enter adds · Esc closes\nDue: calendar, today, +3d\npriority:H · project:Name",
             bg=theme.BG, fg=theme.MUTED, font=(theme.FONT, 9), justify="left", anchor="w", pady=4,
         ).pack(fill="x", side="bottom")
 
@@ -514,14 +513,14 @@ class Panel:
         c = self.pie
         c.delete("all")
         ratio = done / total if total else 0
-        c.create_oval(4, 4, 196, 196, fill=theme.TRACK, outline="")
+        c.create_oval(4, 4, 176, 176, fill=theme.TRACK, outline="")
         if ratio >= 1:
-            c.create_oval(4, 4, 196, 196, fill=theme.ACCENT, outline="")
+            c.create_oval(4, 4, 176, 176, fill=theme.ACCENT, outline="")
         elif ratio > 0:
-            c.create_arc(4, 4, 196, 196, start=90, extent=-360 * ratio, fill=theme.ACCENT, outline="")
-        hole = 100 * 0.58
-        c.create_oval(100 - hole, 100 - hole, 100 + hole, 100 + hole, fill=theme.BG, outline="")
-        c.create_text(100, 100, text=f"{round(ratio * 100)}%", fill=theme.FG, font=(theme.FONT, 26, "bold"))
+            c.create_arc(4, 4, 176, 176, start=90, extent=-360 * ratio, fill=theme.ACCENT, outline="")
+        hole = 90 * 0.58
+        c.create_oval(90 - hole, 90 - hole, 90 + hole, 90 + hole, fill=theme.BG, outline="")
+        c.create_text(90, 90, text=f"{round(ratio * 100)}%", fill=theme.FG, font=(theme.FONT, 26, "bold"))
 
     def _row(self, task: Task) -> None:
         row = tk.Frame(self.rows, bg=theme.BG)
@@ -542,9 +541,9 @@ class Panel:
         )
         check.pack(side="left", padx=(8, 6))
         image = self.icon(task.priority)
-        marker = tk.Label(row, bg=theme.BG, width=20, height=20)
+        # Always an image: without one, Tk reads width/height as characters.
+        marker = tk.Label(row, bg=theme.BG, image=image or self.blank_image(), width=20, height=20)
         if image is not None:
-            marker.configure(image=image)
             Tooltip(marker, lambda: "Priority: " + self.texts.priority_name(task.priority))
         marker.pack(side="left", padx=(0, 6))
 
@@ -557,7 +556,7 @@ class Panel:
             cal_button = tk.Label(row, image=self.calendar_image(), bg=theme.BG, cursor="hand2")
             cal_button.pack(side="right", padx=4)
             Tooltip(cal_button, lambda: "Due date")
-            prio_button = tk.Label(row, bg=theme.BG, cursor="hand2", width=20, height=20)
+            prio_button = tk.Label(row, bg=theme.BG, cursor="hand2", image=self.blank_image(), width=20, height=20)
             prio_button.pack(side="right", padx=4)
             Tooltip(prio_button, lambda: "Priority")
         due_text = self.app.store.due_label(task)
@@ -611,6 +610,12 @@ class Panel:
             )
             label.pack(side="left", fill="x", expand=True, ipady=6)
             label.bind("<Double-Button-1>", lambda _e: self._start_edit(task.uuid))
+
+    def blank_image(self, size: int = 20):
+        key = ("blank", size)
+        if key not in self.images:
+            self.images[key] = tk.PhotoImage(master=self.win, width=size, height=size)
+        return self.images[key]
 
     def icon_placeholder(self):
         """The Medium icon in the muted color: "no priority yet" in the edit row."""
