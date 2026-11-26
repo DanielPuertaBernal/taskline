@@ -4,10 +4,16 @@ import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "logic.js" as Logic
 
 // Centered task manager, sized like Omarchy's floating terminal (875x600):
 // a pie of today's done vs pending tasks beside the full list, where each
-// task can be completed, edited or deleted, plus a field to add new ones.
+// task can be completed, edited or deleted, plus fields to add new ones with
+// a due date and a priority. The list sorts by due date or priority; the
+// choice is saved in ~/.local/state/taskline/omarchy-sort.
+// Once the service loads (and every few hours after) it starts the
+// taskline-update script detached; the script itself checks at most once a
+// day, verifies the release checksum and honours the opt-out.
 // The bar widget toggles it through the `danso.tasks-panel` IPC target;
 // Escape, the close button or closing the window hides it. The Taskwarrior
 // on-exit hook keeps it in sync.
@@ -19,6 +25,15 @@ Item {
   property bool shown: false
   property var tasks: []
   property string editingUuid: ""
+  property string sortMode: "due"
+  property string newPriority: ""
+  property var now: new Date()
+
+  readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/taskline"
+  // The shell loads plugins through a qs:/// URL; strip any scheme to get the path.
+  readonly property string updater: Qt.resolvedUrl("taskline-update").toString().replace(/^[a-z]+:\/\//, "")
+  readonly property var dueColors: ({ overdue: "#f7768e", today: "#ff9e64", upcoming: "#7dcfff" })
+  readonly property var priorityColors: ({ H: "#f7768e", M: "#e0af68", L: "#9ece6a" })
 
   readonly property int done: tasks.filter(t => t.status === "completed").length
   readonly property int pending: tasks.length - done
@@ -31,17 +46,25 @@ Item {
   function apply(json) {
     let list = []
     try { list = JSON.parse(json) } catch (e) { return }
-    list.sort((a, b) => {
-      if (a.status !== b.status) return a.status === "pending" ? -1 : 1
-      return (b.urgency || 0) - (a.urgency || 0)
-    })
-    root.tasks = list
+    root.now = new Date()
+    root.tasks = Logic.sortTasks(list, root.sortMode)
   }
 
-  // argv is passed without a shell; splitting on whitespace lets Taskwarrior
-  // parse modifiers such as project:Name or due:tomorrow.
-  function words(text) {
-    return String(text).trim().split(/\s+/).filter(w => w !== "")
+  function setSort(mode) {
+    root.sortMode = mode === "priority" ? "priority" : "due"
+    root.tasks = Logic.sortTasks(root.tasks, root.sortMode)
+  }
+
+  function toggleSort() {
+    setSort(root.sortMode === "due" ? "priority" : "due")
+    saveSortProc.command = ["sh", "-c", 'mkdir -p "$1" && printf "%s\\n" "$2" > "$1/omarchy-sort"',
+                            "sh", root.stateDir, root.sortMode]
+    saveSortProc.running = true
+  }
+
+  function cyclePriority() {
+    const order = ["", "H", "M", "L"]
+    root.newPriority = order[(order.indexOf(root.newPriority) + 1) % order.length]
   }
 
   function run(args) {
@@ -50,9 +73,14 @@ Item {
     actionProc.running = true
   }
 
-  function addTask(text) {
-    const w = words(text)
-    if (w.length > 0) run(["add"].concat(w))
+  // argv is passed without a shell; Logic splits on whitespace so Taskwarrior
+  // parses modifiers such as project:Name, due:+3d or priority:H.
+  function addTask(text, due) {
+    const args = Logic.addArgs(text, due, root.newPriority)
+    if (args.length === 0) return false
+    run(["add"].concat(args))
+    root.newPriority = ""
+    return true
   }
 
   function toggleDone(task) {
@@ -61,9 +89,10 @@ Item {
   }
 
   function saveEdit(task, text) {
-    const w = words(text)
     root.editingUuid = ""
-    if (w.length > 0 && text.trim() !== task.description) run([task.uuid, "modify"].concat(w))
+    if (text.trim() === Logic.editText(task)) return
+    const args = Logic.editArgs(task, text)
+    if (args.length > 0) run([task.uuid, "modify"].concat(args))
   }
 
   function deleteTask(task) {
@@ -103,6 +132,38 @@ Item {
   Process {
     id: actionProc
     onExited: root.refresh()
+  }
+
+  Process {
+    id: loadSortProc
+    running: true
+    command: ["sh", "-c", 'cat "$1/omarchy-sort" 2>/dev/null', "sh", root.stateDir]
+    stdout: StdioCollector {
+      onStreamFinished: root.setSort(text.trim())
+    }
+  }
+
+  Process { id: saveSortProc }
+
+  // setsid -f detaches the updater, so reloading the plugins after an update
+  // (which destroys this service) does not kill it halfway.
+  Process {
+    id: updateProc
+    command: ["setsid", "-f", "bash", root.updater, "--auto"]
+  }
+
+  Timer {
+    interval: 15000
+    running: true
+    repeat: false
+    onTriggered: { if (!updateProc.running) updateProc.running = true; updateTimer.running = true }
+  }
+
+  Timer {
+    id: updateTimer
+    interval: 6 * 3600 * 1000
+    repeat: true
+    onTriggered: if (!updateProc.running) updateProc.running = true
   }
 
   Timer {
@@ -232,10 +293,33 @@ Item {
             }
           }
 
+          Rectangle {
+            width: sortLabel.implicitWidth + 24
+            height: sortLabel.implicitHeight + 10
+            radius: 6
+            color: sortArea.containsMouse ? Qt.alpha(Commons.Color.accent, 0.2) : Qt.alpha(Commons.Color.accent, 0.08)
+
+            Text {
+              id: sortLabel
+              anchors.centerIn: parent
+              text: "⇅  Orden: " + (root.sortMode === "priority" ? "prioridad" : "fecha")
+              color: Commons.Color.popups.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.title
+            }
+            MouseArea {
+              id: sortArea
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleSort()
+            }
+          }
+
           Text {
             width: parent.width
             wrapMode: Text.WordWrap
-            text: "Enter guarda · Esc cierra\nproject:X  due:friday  priority:H"
+            text: "Enter guarda · Esc cierra\nFecha: hoy, mañana, +3d, 2026-12-01\nproject:X  due:friday  priority:H"
             color: Commons.Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -248,18 +332,61 @@ Item {
           height: parent.height
           spacing: 12
 
-          TextField {
-            id: input
+          Row {
+            id: inputRow
             width: parent.width
-            font.pixelSize: Style.font.title
-            placeholderText: "Nueva tarea y Enter…"
-            onAccepted: { root.addTask(text); text = "" }
+            spacing: 8
+
+            function submit() {
+              if (root.addTask(input.text, dueInput.text)) { input.text = ""; dueInput.text = "" }
+              input.forceActiveFocus()
+            }
+
+            TextField {
+              id: input
+              width: parent.width - dueInput.width - priorityButton.width - 2 * parent.spacing
+              font.pixelSize: Style.font.title
+              placeholderText: "Nueva tarea y Enter…"
+              onAccepted: inputRow.submit()
+            }
+
+            TextField {
+              id: dueInput
+              width: 150
+              font.pixelSize: Style.font.title
+              placeholderText: "fecha: hoy, +3d"
+              onAccepted: inputRow.submit()
+            }
+
+            Rectangle {
+              id: priorityButton
+              width: 44
+              height: input.height
+              radius: 6
+              color: Qt.alpha(Commons.Color.accent, priorityArea.containsMouse ? 0.2 : 0.08)
+
+              Text {
+                anchors.centerIn: parent
+                text: root.newPriority === "" ? "–" : root.newPriority
+                color: root.priorityColors[root.newPriority] || Commons.Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.title
+                font.bold: true
+              }
+              MouseArea {
+                id: priorityArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.cyclePriority()
+              }
+            }
           }
 
           ListView {
             id: list
             width: parent.width
-            height: parent.height - input.height - parent.spacing
+            height: parent.height - inputRow.height - parent.spacing
             clip: true
             spacing: 4
             model: root.tasks
@@ -293,11 +420,31 @@ Item {
                 }
               }
 
+              // Priority marker: H red, M yellow, L green.
+              Rectangle {
+                id: marker
+                anchors { left: check.right; leftMargin: 8; verticalCenter: parent.verticalCenter }
+                width: 4
+                height: 20
+                radius: 2
+                color: root.priorityColors[row.modelData.priority] || "transparent"
+              }
+
+              Text {
+                id: dueLabel
+                visible: !row.editing && text !== ""
+                anchors { right: actions.left; rightMargin: 16; verticalCenter: parent.verticalCenter }
+                text: Logic.dueLabel(row.modelData, root.now)
+                color: root.dueColors[Logic.dueState(row.modelData, root.now)] || Commons.Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.title
+              }
+
               Text {
                 visible: !row.editing
                 anchors {
-                  left: check.right; leftMargin: 12
-                  right: actions.left; rightMargin: 12
+                  left: marker.right; leftMargin: 10
+                  right: dueLabel.visible ? dueLabel.left : actions.left; rightMargin: 12
                   verticalCenter: parent.verticalCenter
                 }
                 elide: Text.ElideRight
@@ -318,7 +465,7 @@ Item {
                   verticalCenter: parent.verticalCenter
                 }
                 font.pixelSize: Style.font.title
-                onVisibleChanged: if (visible) { text = row.modelData.description; forceActiveFocus(); selectAll() }
+                onVisibleChanged: if (visible) { text = Logic.editText(row.modelData); forceActiveFocus(); selectAll() }
                 onAccepted: root.saveEdit(row.modelData, text)
               }
 
