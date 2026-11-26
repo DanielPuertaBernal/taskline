@@ -32,6 +32,11 @@ fn open(path: &Path) -> TaskStore {
     TaskStore::open(path, at("20261126T150000Z"), Zone::utc(), "2.0.0")
 }
 
+/// The fixture as v1.x wrote it on this platform (CRLF on Windows).
+fn as_v1_wrote(text: &str) -> String {
+    taskline_core::store::native_newlines(&text.replace("\r\n", "\n"))
+}
+
 fn names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .unwrap()
@@ -103,7 +108,7 @@ fn saving_writes_the_same_bytes_as_v1() {
     // (annotations, tags, custom numbers) and key order survive a load + save.
     for version in ["v1.1", "v1.2"] {
         let (_dir, path) = fixture(version);
-        let bytes = fs::read_to_string(&path).unwrap();
+        let bytes = as_v1_wrote(&fs::read_to_string(&path).unwrap());
         let mut store = open(&path);
         store.save().unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), bytes, "{version}");
@@ -259,7 +264,7 @@ fn settings_from_every_version_are_read_and_kept() {
 
     let (dir, _) = fixture("v1.2");
     let path = dir.path().join("settings.json");
-    let bytes = fs::read_to_string(&path).unwrap();
+    let bytes = as_v1_wrote(&fs::read_to_string(&path).unwrap());
     let mut s = Settings::load(&path);
     assert_eq!(s.theme(), Choice::Light);
     assert_eq!(s.segments(), 8);

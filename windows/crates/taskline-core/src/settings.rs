@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDate;
 use serde_json::{Map, Value, json};
 
-use crate::store::{Sort, to_json};
+use crate::store::{Sort, native_newlines, to_json};
 use crate::theme::Choice;
 
 /// `TASKLINE_DATA_DIR`, else `%APPDATA%\taskline`, else `~/.local/share/taskline`.
@@ -69,7 +69,10 @@ impl Settings {
             fs::create_dir_all(dir)?;
         }
         let tmp = self.path.with_extension("tmp");
-        fs::write(&tmp, to_json(&Value::Object(self.values.clone())))?;
+        fs::write(
+            &tmp,
+            native_newlines(&to_json(&Value::Object(self.values.clone()))),
+        )?;
         fs::rename(&tmp, &self.path)
     }
 

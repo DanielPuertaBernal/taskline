@@ -177,6 +177,15 @@ pub fn tempfile_in(dir: &Path, prefix: &str, suffix: &str) -> std::io::Result<(P
     Err(std::io::Error::other("could not create a temporary file"))
 }
 
+/// Text as v1.x wrote it: Python's text-mode files use CRLF on Windows.
+pub fn native_newlines(text: &str) -> String {
+    if cfg!(windows) {
+        text.replace('\n', "\r\n")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// JSON with one-space indentation, like Python's `json.dumps(..., indent=1)` in v1.x.
 pub fn to_json(value: &Value) -> String {
     let mut out = Vec::new();
@@ -281,7 +290,7 @@ impl TaskStore {
             json!(self.app_version)
         };
         let meta = json!({"schemaVersion": SCHEMA_VERSION, "appVersion": version});
-        atomic_write(&self.meta_path, &(to_json(&meta) + "\n"))
+        atomic_write(&self.meta_path, &native_newlines(&(to_json(&meta) + "\n")))
     }
 
     /// Migration backups, oldest first.
@@ -446,7 +455,7 @@ impl TaskStore {
         self.check_writable()?;
         let first = !self.meta_path.exists();
         let array = Value::Array(self.tasks.iter().cloned().map(Value::Object).collect());
-        atomic_write(&self.path, &to_json(&array))?;
+        atomic_write(&self.path, &native_newlines(&to_json(&array)))?;
         self.mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
         if first {
             self.write_meta()?;
@@ -745,7 +754,7 @@ impl TaskStore {
 
     pub fn export_file(&self, path: &Path) -> Result<(), StoreError> {
         let array = Value::Array(self.tasks.iter().cloned().map(Value::Object).collect());
-        fs::write(path, to_json(&array))?;
+        fs::write(path, native_newlines(&to_json(&array)))?;
         Ok(())
     }
 }
