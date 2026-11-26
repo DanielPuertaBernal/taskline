@@ -56,7 +56,27 @@ Copy-Item (Join-Path $fixtures "tasks.json"), (Join-Path $fixtures "tasks.meta.j
     Set-Content -NoNewline -Encoding ascii (Join-Path $data "settings.json")
 $tasksHash = Hash (Join-Path $data "tasks.json")
 
-$server = Start-Process python -ArgumentList "-m", "http.server", "$Port", "--bind", "127.0.0.1", "--directory", "`"$srv`"" -PassThru -WindowStyle Hidden
+# A tiny static file server for the fake release (PowerShell's HttpListener).
+$server = Start-Job -ArgumentList $srv.FullName, $Port -ScriptBlock {
+    param($root, $port)
+    $listener = [System.Net.HttpListener]::new()
+    $listener.Prefixes.Add("http://127.0.0.1:$port/")
+    $listener.Start()
+    while ($listener.IsListening) {
+        $context = $listener.GetContext()
+        $name = $context.Request.Url.AbsolutePath.TrimStart("/")
+        $file = Join-Path $root $name
+        if ($name -and (Test-Path -LiteralPath $file -PathType Leaf)) {
+            $bytes = [IO.File]::ReadAllBytes($file)
+            $context.Response.StatusCode = 200
+            $context.Response.ContentLength64 = $bytes.Length
+            $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+        } else {
+            $context.Response.StatusCode = 404
+        }
+        $context.Response.Close()
+    }
+}
 try {
     Start-Sleep -Seconds 2
     $env:TASKLINE_DATA_DIR = $data
@@ -102,6 +122,7 @@ try {
 }
 finally {
     Get-Process taskline -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$root*" } | Stop-Process -Force
-    Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+    Stop-Job $server -ErrorAction SilentlyContinue
+    Remove-Job $server -Force -ErrorAction SilentlyContinue
     Remove-Item Env:TASKLINE_DATA_DIR, Env:TASKLINE_UPDATE_API -ErrorAction SilentlyContinue
 }
