@@ -130,6 +130,7 @@ pub struct App {
     press: Option<Point>,
     dragging: bool,
     position_dirty: Option<(i32, i32)>,
+    picked_at: Option<std::time::Instant>,
     tray: Option<Tray>,
     tray_tip: String,
     pub selftest: Option<crate::selftest::Selftest>,
@@ -183,6 +184,7 @@ impl App {
             press: None,
             dragging: false,
             position_dirty: None,
+            picked_at: None,
             tray: None,
             tray_tip: String::new(),
             selftest,
@@ -193,11 +195,14 @@ impl App {
             app.tray = Some(Tray::new(texts.ui, rgba, size, app.menu_state()));
             app.refresh_tray();
         }
-        let mut tasks = vec![app.open_bar(), iced::system::theme().map(Message::SystemTheme)];
         // A v1.2 (or older v2) build that just updated to this one left the version it
         // installed; it matches us unless the update was rolled back.
-        if notice.as_deref() == Some(taskline_core::VERSION) {
+        let updated = notice.as_deref() == Some(taskline_core::VERSION);
+        if updated {
             app.notice = Some(format!("✓ {} v{}", texts.ui.updated, taskline_core::VERSION));
+        }
+        let mut tasks = vec![app.open_bar(), iced::system::theme().map(Message::SystemTheme)];
+        if updated {
             tasks.push(Task::perform(sleep(NOTICE), |()| Message::ClearNotice));
         }
         if app.selftest.is_none() {
@@ -480,6 +485,7 @@ impl App {
                     return Task::none();
                 };
                 self.popover = Popover::None;
+                self.picked_at = Some(std::time::Instant::now());
                 match target {
                     Target::New => {
                         self.due = day.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
@@ -610,7 +616,11 @@ impl App {
             }
             Message::PanelPressed => operation::is_focused(Id::new(DUE_ID)).map(Message::DueFocused),
             Message::DueFocused(focused) => {
-                if focused && self.popover == Popover::None {
+                // The click that picked a day refocuses the field; do not reopen for it.
+                let just_picked = self
+                    .picked_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+                if focused && self.popover == Popover::None && !just_picked {
                     self.open_calendar(Target::New);
                 }
                 Task::none()

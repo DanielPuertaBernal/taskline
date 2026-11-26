@@ -464,7 +464,7 @@ fn finish(app: &mut App) -> Task<Message> {
 
 fn distinct_colors(shot: &Screenshot) -> usize {
     let mut colors = std::collections::HashSet::new();
-    for pixel in shot.rgba.chunks_exact(4).step_by(7) {
+    for pixel in shot.rgba.as_chunks::<4>().0.iter().step_by(7) {
         colors.insert([pixel[0], pixel[1], pixel[2]]);
         if colors.len() > 64 {
             break;
@@ -482,7 +482,7 @@ pub fn save_png(directory: &Path, name: &str, shot: &Screenshot) -> Result<(), S
     let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
     // Opaque PNGs: the windows have no transparency.
     let mut rgba = shot.rgba.to_vec();
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     writer.write_image_data(&rgba).map_err(|e| e.to_string())

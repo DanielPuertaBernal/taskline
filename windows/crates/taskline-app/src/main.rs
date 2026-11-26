@@ -140,7 +140,9 @@ pub fn logo_rgba() -> (Vec<u8>, u32) {
     let rgba = match info.color_type {
         png::ColorType::Rgba => buffer,
         png::ColorType::Rgb => buffer
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|c| [c[0], c[1], c[2], 255])
             .collect(),
         _ => [0x7a, 0xa2, 0xf7, 255].repeat((info.width * info.height) as usize),
