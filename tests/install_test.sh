@@ -97,6 +97,27 @@ echo '#!/bin/sh' >"$H/my-hooks/on-exit.omarchy-bar"
 check "uninstall twice exits 0" run "$H" uninstall.sh
 check "foreign hook with same name is kept" test -e "$H/my-hooks/on-exit.omarchy-bar"
 
+# --- upgrade: backups live outside plugins/ and hooks/ ----------------------
+H="$(new_home)"
+check "install for upgrade test" run "$H" install.sh
+P="$H/.config/omarchy/plugins"
+B="$H/.local/state/taskline/backups"
+check "updater installed and executable" test -x "$P/danso.tasks/taskline-update"
+mkdir -p "$P/danso.tasks.bak.taskline.20991231000000"           # left by Taskline 1.0.0
+echo '{"id":"danso.tasks"}' >"$P/danso.tasks.bak.taskline.20991231000000/manifest.json"
+for i in 1 2 3 4 5 6; do mkdir -p "$B/danso.tasks.2025010100000$i"; done
+echo '// local edit' >>"$P/danso.tasks/Tasks.qml"
+echo '# local edit' >>"$H/.config/task/hooks/on-exit.omarchy-bar"
+check "upgrade install exits 0" run "$H" install.sh
+check "plugin replaced by the packaged one" cmp -s "$ROOT/omarchy/danso.tasks/Tasks.qml" "$P/danso.tasks/Tasks.qml"
+check "no backup folders left inside plugins/" test -z "$(find "$P" -mindepth 1 -maxdepth 1 -name '*.bak*' -print -quit)"
+check "old 1.0.0 backup moved out of plugins/" test -f "$B/danso.tasks.20991231000000/manifest.json"
+check "replaced plugin backed up with the local edit" \
+  bash -c "grep -l '// local edit' '$B'/danso.tasks.*/Tasks.qml >/dev/null"
+check "only the last 5 plugin backups kept" test "$(find "$B" -mindepth 1 -maxdepth 1 -type d -name 'danso.tasks.*' | wc -l)" = 5
+check "hook backup not in the hooks folder" test -z "$(find "$H/.config/task/hooks" -name '*.bak*' -print -quit)"
+check "hook backup kept in backups" bash -c "grep -l '# local edit' '$B'/on-exit.omarchy-bar.* >/dev/null"
+
 # --- missing Taskwarrior only warns ----------------------------------------
 H="$(new_home)"
 check "install without task exits 0" env -i HOME="$H" PATH="$H/bin:/usr/bin:/bin" OMARCHY_PATH="$H/omarchy" \

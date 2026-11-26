@@ -27,6 +27,14 @@ class Tray:
                 lambda: app.post(lambda: app.set_autostart(not system.autostart_enabled())),
                 checked=lambda _item: system.autostart_enabled(),
             ),
+            pystray.MenuItem(
+                "Update automatically",
+                lambda: app.post(lambda: (app.auto_update_var.set(not app.auto_update_var.get()),
+                                          app._auto_update_changed())),
+                checked=lambda _item: app.settings.get("auto_update", True) is not False,
+            ),
+            pystray.MenuItem("Check for updates now", lambda: app.post(lambda: app.check_for_updates(manual=True))),
+            pystray.MenuItem("About Taskline", lambda: app.post(app.about)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", lambda: app.post(app.quit)),
         )

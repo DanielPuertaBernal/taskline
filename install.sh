@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Taskline installer for Omarchy.
 #
-# Installs the danso.tasks shell plugin (bar widget + task panel), the
-# Taskwarrior on-exit hook that refreshes it, and enables the widget in the
-# Omarchy bar. Safe to run more than once: every step checks before it writes,
-# and every user config file it edits is backed up first.
+# Installs the danso.tasks shell plugin (bar widget + task panel + the
+# taskline-update auto-updater), the Taskwarrior on-exit hook that refreshes it,
+# and enables the widget in the Omarchy bar. Safe to run more than once: every
+# step checks before it writes, and every user config file it edits is backed
+# up first. Your tasks (Taskwarrior's data.location) are never written.
+#
+# A replaced plugin folder is kept in ~/.local/state/taskline/backups (the last
+# five), outside the plugins folder so the shell never loads a backup.
 #
 # Usage:
 #   ./install.sh                      # from a clone or an extracted release
@@ -25,6 +29,9 @@ WINDOW_RULE='o.window({ class = "^org.quickshell$", title = "^Tareas$" }, { tag 
 SECTION="${TASKLINE_SECTION:-right}"
 RELEASE_URL="${TASKLINE_RELEASE_URL:-https://github.com/DanielPuertaBernal/taskline/releases/latest/download/taskline-omarchy.tar.gz}"
 STAMP="$(date +%Y%m%d%H%M%S)"
+BACKUP_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/taskline/backups"
+KEEP_BACKUPS=5
+PLUGIN_UPGRADED=0
 
 info() { printf '\033[1;34m::\033[0m %s\n' "$*"; }
 ok() { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
@@ -90,19 +97,45 @@ check_dependencies() {
 }
 
 # ----------------------------------------------------------------- plugin ---
+# Taskline 1.0.0 left plugin backups next to the plugin. The shell loads every
+# folder in plugins/, so such a backup (same id) could shadow the live plugin:
+# move them to the backup folder.
+relocate_old_backups() {
+  local plugins="$1" old
+  for old in "$plugins/$PLUGIN_ID".bak.taskline.*; do
+    [[ -d $old ]] || continue
+    mkdir -p "$BACKUP_DIR"
+    mv "$old" "$BACKUP_DIR/$PLUGIN_ID.${old##*.bak.taskline.}"
+    info "Moved old plugin backup $old to $BACKUP_DIR"
+  done
+}
+
+prune_backups() {
+  local old
+  # Names end in a sortable timestamp; keep the newest $KEEP_BACKUPS.
+  while IFS= read -r old; do
+    rm -rf "$old"
+  done < <(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name "$PLUGIN_ID.*" 2>/dev/null | sort | head -n "-$KEEP_BACKUPS")
+}
+
 install_plugin() {
   local src="$1/omarchy/$PLUGIN_ID"
   local dest="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
   mkdir -p "$(dirname "$dest")"
+  relocate_old_backups "$(dirname "$dest")"
   if [[ -d $dest ]]; then
     if diff -rq "$src" "$dest" >/dev/null 2>&1; then
       ok "Plugin already up to date at $dest"
       return
     fi
-    mv "$dest" "$dest.bak.taskline.$STAMP"
-    info "Previous plugin moved to $dest.bak.taskline.$STAMP"
+    mkdir -p "$BACKUP_DIR"
+    mv "$dest" "$BACKUP_DIR/$PLUGIN_ID.$STAMP"
+    PLUGIN_UPGRADED=1
+    info "Previous plugin moved to $BACKUP_DIR/$PLUGIN_ID.$STAMP"
+    prune_backups
   fi
   cp -r "$src" "$dest"
+  chmod +x "$dest/taskline-update" 2>/dev/null || true
   ok "Plugin installed to $dest"
 }
 
@@ -147,7 +180,12 @@ install_hook() {
   if [[ -f $hooks_dir/$HOOK_NAME ]] && cmp -s "$src" "$hooks_dir/$HOOK_NAME"; then
     ok "Hook already installed at $hooks_dir/$HOOK_NAME"
   else
-    [[ -f $hooks_dir/$HOOK_NAME ]] && backup "$hooks_dir/$HOOK_NAME"
+    if [[ -f $hooks_dir/$HOOK_NAME ]]; then
+      # Not next to the hook: Taskwarrior would run an executable backup too.
+      mkdir -p "$BACKUP_DIR"
+      cp -a "$hooks_dir/$HOOK_NAME" "$BACKUP_DIR/$HOOK_NAME.$STAMP"
+      info "Backed up $hooks_dir/$HOOK_NAME -> $BACKUP_DIR/$HOOK_NAME.$STAMP"
+    fi
     install -m 0755 "$src" "$hooks_dir/$HOOK_NAME"
     ok "Hook installed to $hooks_dir/$HOOK_NAME"
   fi
@@ -215,6 +253,14 @@ install_window_rule() {
 
 reload_shell() {
   [[ ${TASKLINE_NO_IPC:-0} == 1 ]] && return 0
+  # A rescan loads a new plugin but keeps running services on their old code,
+  # so an upgrade restarts the shell (omarchy-restart-shell refuses while the
+  # session is locked; the rescan below is then the fallback).
+  if (( PLUGIN_UPGRADED )) && command -v omarchy-restart-shell >/dev/null \
+    && omarchy-restart-shell >/dev/null 2>&1; then
+    ok "Omarchy shell restarted to load the new version"
+    return 0
+  fi
   if command -v omarchy-shell >/dev/null; then
     omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
     omarchy-shell "$PLUGIN_ID" refresh >/dev/null 2>&1 || true
@@ -233,6 +279,7 @@ main() {
   install_window_rule
   reload_shell
   ok "Done. Click the bar widget to open the task panel; add tasks with: task add <text>"
+  info "Updates install automatically (once a day). Opt out: echo auto_update=false > ~/.config/taskline/omarchy.conf"
 }
 
 main "$@"
