@@ -980,6 +980,15 @@ class TasklineApp:
             pass
         self.root.after(POLL_MS, self._poll)
 
+    def process_events(self) -> None:
+        """Run every action posted so far (the poll timer does this every POLL_MS)."""
+        while True:
+            try:
+                action = self.events.get_nowait()
+            except queue.Empty:
+                return
+            action()
+
     def post(self, action) -> None:
         """Run `action` on the Tk thread (used by the tray thread)."""
         self.events.put(action)
@@ -1172,9 +1181,7 @@ def _selftest_theme(app: TasklineApp) -> list[str]:
     assert system.load_settings()["theme"] == "light"
     app.panel.theme_switch.light = False
     app.panel.theme_switch._slide(0)  # the switch's own toggle path, without the animation
-    for _ in range(5):
-        app.root.update()
-        app.root.after(20)
+    app.process_events()  # run what the switch posted, instead of waiting for the poll timer
     app.root.update()
     assert theme.MODE == "dark" and system.load_settings()["theme"] == "dark", theme.MODE
     return ["theme: light/dark switch rebuilds the UI and is saved"]
